@@ -1,0 +1,22 @@
+[package]
+name = "trolley"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+trolley_macros = { path = "../trolley_macros" }
+trolley_infra = { path = "../trolley_infra" }
+async-trait = "0.1.89"
+tokio = { version = "1.49.0", features = ["rt-multi-thread"] }
+tonic = "0.14.2"
+tracing = "0.1.44"
+quote = "1.0.44"
+convert_case = "0.11.0"
+prettyplease = "0.2.37"
+proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
+
+[features]
+# pass Span::current() from call site of caller to router and receiving end
+route_spans = []
+synchronous = []
+build = []

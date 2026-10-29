@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["trolley", "trolley_macros", "trolley_infra", "trolley_example"]
+
+[workspace.dependencies]
+trolley = { path = "./trolley" }
+trolley_infra = { path = "./trolley_infra" }
+trolley_macros = { path = "./trolley_infra" }
+
+
+[workspace.lints.rust]
+unreachable_pub = "deny"
+
+[workspace.lints.clippy]
+pedantic = "warn"
+use_self = "warn"
+redundant_clone = "warn"
+equatable_if_let = "warn"
+needless_pass_by_ref_mut = "warn"
+absolute_paths = "warn"
+fallible_impl_from = "warn"
+redundant_pub_crate = { level = "allow", priority = 1 }
+unused_self = { level = "allow", priority = 1 }
