@@ -68,14 +68,6 @@ fn generate_call_ctx() -> TokenStream {
             }
         }
 
-        #[must_use]
-        pub const fn panicky(self) -> PanickyCallCtx<'a, State> {
-            PanickyCallCtx {
-                handle: self.handle,
-                timeout: self.timeout,
-            }
-        }
-
         pub async fn call<Input>(
             &self,
             input: Input
@@ -169,53 +161,13 @@ fn generate_retry_call_ctx() -> TokenStream {
 }
 
 #[cfg(feature = "build")]
-fn generate_panicky_call_ctx() -> TokenStream {
-    quote! {
-        #[derive(Debug)]
-        pub struct PanickyCallCtx<'a, State>
-        where State: ::trolley::Router
-        {
-            handle: &'a ::trolley::RouterHandle<State>,
-            timeout: ::trolley::RoutedCallTimeout,
-        }
-        impl<State> PanickyCallCtx<'_, State>
-        where State: ::trolley::Router
-        {
-            pub async fn call<Input>(&self, input: Input) -> <State as ::trolley::Service<Input>>::Output
-            where
-                State: ::trolley::Service<Input>,
-                Input: ::std::fmt::Debug + Send + 'static,
-                <State as ::trolley::Service<Input>>::Output: Send,
-                {
-                    self.handle.call(input, self.timeout).await.unwrap()
-                }
-
-            pub async fn call_mut<Input>(
-                &self,
-                input: Input
-            ) -> <State as ::trolley::ServiceMut<Input>>::Output
-            where
-                State: ::trolley::ServiceMut<Input>,
-                Input: ::std::fmt::Debug + Send + 'static,
-                <State as ::trolley::ServiceMut<Input>>::Output: Send,
-                {
-                    self.handle.call_mut(input, self.timeout).await.unwrap()
-                }
-        }
-
-    }
-}
-
-#[cfg(feature = "build")]
 pub fn generate_call_ctxs(relative_out_path: &path::Path) {
     let regular = generate_call_ctx();
     let retry = generate_retry_call_ctx();
-    let panicky = generate_panicky_call_ctx();
 
     let generated = quote! {
         #regular
         #retry
-        #panicky
     };
 
     fs::write(

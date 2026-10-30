@@ -10,10 +10,12 @@ fn generate_call_ctx(
     let call_ctx = quote! {
     crate::#( #ctx_path_idents )::*::CallCtx
     };
-    let panicky_call_ctx = quote! {
-    crate::#( #ctx_path_idents )::*::PanickyCallCtx
-        };
-    (call_ctx, panicky_call_ctx)
+
+    let retry_call_ctx = quote! {
+    crate::#( #ctx_path_idents )::*::RetryCallCtx
+    };
+
+    (call_ctx, retry_call_ctx)
 }
 
 fn split_base_and_ident_from_ty_string(
@@ -133,7 +135,7 @@ fn generate_handle(
 fn generate_call_ctx_method(
     generics: &GenericsTokenStreams,
     call_ctx: &proc_macro2::TokenStream,
-    panicky_call_ctx: &proc_macro2::TokenStream,
+    _retry_call_ctx: &proc_macro2::TokenStream,
     self_ty: &proc_macro2::TokenStream,
     method_info: trolley_infra::ServiceMethodInfo,
 ) -> proc_macro2::TokenStream {
@@ -194,8 +196,8 @@ fn generate_call_ctx_method(
             }
         }
 
-        // impl<'a> #retry_call_ctx<'a, #self_ty> {
-        //     pub async fn #method_name(&self, #( #arg_names: #arg_types ),* ) ->
+        // impl<'a> #retry_call_ctx<'a, #self_ty> where #full_struct_target: Clone {
+        //     pub async fn #name(&self, #( #arg_names: #arg_types ),* ) ->
         //         ::std::result::Result<#ret_ty, ::trolley::RoutedCallError>
         //     where #self_ty: #router_trait<#full_struct_target, Output = #ret_ty>
         //     {
@@ -203,16 +205,6 @@ fn generate_call_ctx_method(
         //         self.#router_call_method(input).await
         //     }
         // }
-
-        impl<'a #(, #generic_params)*> #panicky_call_ctx<'a, #self_ty> #maybe_where_clause {
-            pub async fn #name(&self, #( #arg_names: #arg_types ),* ) ->
-                #ret_ty
-            where #self_ty: #router_trait<#full_struct_target, Output = #ret_ty>
-            {
-                let input = #full_struct_expr;
-                self.#router_call_method(input).await
-            }
-        }
     }
 }
 
@@ -225,7 +217,7 @@ pub fn generator(
         .iter()
         .map(|segment| format_ident!("{}", segment))
         .collect();
-    let (call_ctx, panicky_call_ctx) = generate_call_ctx(&ctx_path_idents);
+    let (call_ctx, retry_call_ctx) = generate_call_ctx(&ctx_path_idents);
 
     let interfaces = interface_generator::extract_interfaces(paths);
 
@@ -245,7 +237,7 @@ pub fn generator(
             let call_ctx_method = generate_call_ctx_method(
                 &generics,
                 &call_ctx,
-                &panicky_call_ctx,
+                &retry_call_ctx,
                 &self_ty,
                 method_info,
             );

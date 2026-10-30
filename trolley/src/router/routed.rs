@@ -98,7 +98,7 @@ where
     if let Ok((state, remaining)) = await_with_timeout(state_handle.write(), timeout).await {
         Ok((state, remaining))
     } else {
-        tracing::error!("timed out waiting for read lock on state handle");
+        tracing::error!("timed out waiting for write lock on state handle");
         Err(RoutedCallError::Timeout(Timeout::RwLockTimeout(timeout)))
     }
 }
@@ -199,7 +199,7 @@ where
                     self.inner
                         .rsp_tx
                         .send(Err(e))
-                        .expect("unable to resopnd to routed call");
+                        .expect("unable to respond to routed call");
                     return;
                 }
             },
@@ -303,7 +303,7 @@ where
                     self.inner
                         .rsp_tx
                         .send(Err(e))
-                        .expect("unable to resopnd to routed call");
+                        .expect("unable to respond to routed call");
                     return;
                 }
             },
