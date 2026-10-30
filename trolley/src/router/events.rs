@@ -1,6 +1,9 @@
 use std::{
-    fmt,
-    sync::{Arc, atomic::AtomicBool},
+    any, fmt,
+    sync::{
+        Arc,
+        atomic::{self, AtomicBool},
+    },
 };
 
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -12,7 +15,8 @@ impl<E> EventSender<E>
 where
     E: fmt::Debug,
 {
-    pub fn new(event_tx: mpsc::Sender<E>) -> Self {
+    #[must_use]
+    pub const fn new(event_tx: mpsc::Sender<E>) -> Self {
         Self { event_tx }
     }
 
@@ -64,7 +68,7 @@ impl<E> EventReceiver<E>
 where
     E: Send + 'static,
 {
-    pub fn new(event_rx: mpsc::Receiver<E>, router_alive: Arc<AtomicBool>) -> Self {
+    pub const fn new(event_rx: mpsc::Receiver<E>, router_alive: Arc<AtomicBool>) -> Self {
         Self {
             event_rx,
             router_alive,
@@ -84,11 +88,8 @@ where
             while let Some(event) = self.event_rx.recv().await {
                 hdlr(event, hdlr_meta.clone()).await;
             }
-            if self.router_alive.load(std::sync::atomic::Ordering::Relaxed) {
-                tracing::warn!(
-                    "fell out of event receiver for {:?}",
-                    std::any::type_name::<E>()
-                );
+            if self.router_alive.load(atomic::Ordering::Relaxed) {
+                tracing::warn!("fell out of event receiver for {:?}", any::type_name::<E>());
             }
         })
     }
@@ -97,7 +98,11 @@ where
         self.event_rx.recv().await
     }
 
-    pub async fn try_recv(&mut self) -> Result<E, mpsc::error::TryRecvError> {
+    /// Try to receive an event without blocking
+    ///
+    /// # Errors
+    /// Returns an error if no events are available, or if the channel is closed
+    pub fn try_recv(&mut self) -> Result<E, mpsc::error::TryRecvError> {
         self.event_rx.try_recv()
     }
 }

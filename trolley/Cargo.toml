@@ -3,6 +3,7 @@ name = "trolley"
 version = "0.1.0"
 edition = "2024"
 
+# TODO: minimize for trolley itself
 [dependencies]
 trolley_macros = { path = "../trolley_macros" }
 trolley_infra = { path = "../trolley_infra" }
@@ -12,11 +13,19 @@ tonic = "0.14.2"
 tracing = "0.1.44"
 quote = "1.0.44"
 convert_case = "0.11.0"
-prettyplease = "0.2.37"
+prettyplease = "0.3.0"
 proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
+# TODO: remove
+syn = { version = "3.0.9", features = ["full", "parsing"] }
 
 [features]
 # pass Span::current() from call site of caller to router and receiving end
 route_spans = []
 synchronous = []
 build = []
+
+[lints]
+workspace = true
+
+[clippy.lints]
+workspace = true

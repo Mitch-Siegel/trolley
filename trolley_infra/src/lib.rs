@@ -14,7 +14,7 @@ pub struct ServiceMethodInfo {
     pub mutness: bool,
     pub asyncness: bool,
     pub args: Vec<(proc_macro2::Ident, proc_macro2::TokenStream)>,
-    pub maybe_ret: Option<syn::Type>,
+    pub maybe_ret: Option<proc_macro2::TokenStream>,
     pub struct_name: syn::Ident,
 }
 
@@ -24,7 +24,7 @@ fn extract_info_from_arg(arg: &syn::FnArg) -> Result<(syn::Ident, syn::Type), To
             syn::Pat::Ident(pat_ident) => Ok((pat_ident.ident, *pat_type.ty.clone())),
             _ => Err(quote_spanned!(arg.span()=> compile_error!("unsupported argument pattern");)),
         },
-        _ => Err(
+        syn::FnArg::Receiver(_) => Err(
             quote_spanned!(arg.span()=> compile_error!("all arguments after first must be typed");),
         ),
     }
@@ -32,16 +32,13 @@ fn extract_info_from_arg(arg: &syn::FnArg) -> Result<(syn::Ident, syn::Type), To
 
 fn extract_info_from_first_arg(arg: &syn::FnArg) -> Result<bool, TokenStream> {
     match arg {
-        syn::FnArg::Receiver(receiver) => {
-            if receiver.reference.is_none() {
-                Err(
-                    quote_spanned!(arg.span()=>compile_error!("first argument must be &self or &mut self");),
-                )
-            } else {
-                Ok(receiver.mutability.is_some())
-            }
-        }
-        _ => Err(
+        syn::FnArg::Receiver(receiver) => match &receiver.kind {
+            syn::ReceiverKind::Reference(_, _, mutability) => Ok(mutability.is_some()),
+            syn::ReceiverKind::Typed(_, _) | syn::ReceiverKind::Value | _ => Err(
+                quote_spanned!(arg.span()=>compile_error!("first argument must be &self or &mut self");),
+            ),
+        },
+        syn::FnArg::Typed(_) => Err(
             quote_spanned!(arg.span()=> compile_error!("first argument must be &self or &mut self");),
         ),
     }
@@ -51,12 +48,8 @@ pub fn extract_method_info(method: &syn::ImplItemFn) -> Result<ServiceMethodInfo
     let method_name = &method.sig.ident;
 
     let mut inputs = method.sig.inputs.iter();
-    let mutness = match inputs.next() {
-        Some(arg) => extract_info_from_first_arg(arg),
-        None => Err(
-            quote_spanned!(method.sig.inputs.span()=>compile_error!("first argument must be &self or &mut self");),
-        ),
-    }?;
+    let mutness = inputs.next().map_or_else(|| Err(quote_spanned!(method.sig.inputs.span()=>compile_error!("first argument must be &self or &mut self");)),
+     extract_info_from_first_arg)?;
 
     // extract args, skip &self
     let mut syn_args = Vec::<(syn::Ident, syn::Type)>::new();
@@ -74,10 +67,9 @@ pub fn extract_method_info(method: &syn::ImplItemFn) -> Result<ServiceMethodInfo
     let struct_name = syn::Ident::new(&struct_name_string, method.sig.ident.span());
 
     // extract output and error types
-    let maybe_ret: Option<syn::Type> = match &method.sig.output {
+    let maybe_ret: Option<proc_macro2::TokenStream> = match &method.sig.output {
         syn::ReturnType::Type(_, ty) => match ty.as_ref() {
-            syn::Type::Path(_) => Some(*ty.clone()),
-            syn::Type::Tuple(_) => Some(*ty.clone()),
+            syn::Type::Path(_) | syn::Type::Tuple(_) => Some(quote! {#ty}),
             _ => {
                 return Err(quote_spanned!(ty.span() => compile_error!("unsupported return type")));
             }
@@ -137,18 +129,17 @@ fn has_service_interface_attribute(attrs: &[syn::Attribute]) -> bool {
             (
                 Some(syn::PathSegment { ident: first, .. }),
                 Some(syn::PathSegment { ident: second, .. }),
-            ) => {
-                if first == "trolley" && second == "interface" {
-                    return true;
-                }
+            ) if first == "trolley" && second == "interface" => {
+                return true;
             }
-            _other => continue,
+            _other => (),
         }
     }
 
     false
 }
 
+#[must_use]
 pub fn collect_service_impls(path: &path::Path) -> Vec<(String, syn::ItemImpl)> {
     let mut impls = Vec::new();
 
@@ -158,27 +149,30 @@ pub fn collect_service_impls(path: &path::Path) -> Vec<(String, syn::ItemImpl)> 
             let path = entry.path();
             impls.extend(collect_service_impls(&path));
         }
-    } else if path.extension().map(|e| e == "rs").unwrap_or(false) {
-        let source =
-            fs::read_to_string(path).unwrap_or_else(|_| panic!("failed to read file {:?}", path));
+    } else if path.extension().is_some_and(|e| e == "rs") {
+        let source = fs::read_to_string(path)
+            .unwrap_or_else(|_| panic!("failed to read file {}", path.display()));
         let source = match syn::parse_file(&source) {
             Ok(parsed) => parsed,
             Err(e) => {
                 let span = e.span();
                 let start = span.start();
-                panic!("failed to parse file: {} @ {:?}:{:?}", e, path, start);
+                panic!(
+                    "failed to parse file: {} @ {}:{:?}",
+                    e,
+                    path.display(),
+                    start
+                );
             }
         };
 
         for item in source.items {
             match item {
-                syn::Item::Impl(i) => {
-                    if has_service_interface_attribute(&i.attrs) {
-                        impls.push((path.to_str().unwrap().into(), i));
-                    }
+                syn::Item::Impl(i) if has_service_interface_attribute(&i.attrs) => {
+                    impls.push((path.to_str().unwrap().into(), i));
                 }
-                _ => continue,
-            };
+                _ => (),
+            }
         }
     }
 

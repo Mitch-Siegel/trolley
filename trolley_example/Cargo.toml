@@ -12,3 +12,9 @@ tracing-subscriber = "0.3.22"
 
 [build-dependencies]
 trolley = { workspace = true, features = ["build"] }
+
+[lints]
+workspace = true
+
+[clippy.lints]
+workspace = true

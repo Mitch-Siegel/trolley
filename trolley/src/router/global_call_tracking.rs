@@ -1,14 +1,15 @@
 use std::{
     collections::{HashMap, VecDeque},
     sync::OnceLock,
+    time,
 };
 
 use tokio::sync::RwLock;
 
 #[derive(Clone, Debug)]
-pub struct TrackedCall {
+pub(crate) struct TrackedCall {
     pub name: String,
-    pub start: std::time::Instant,
+    pub start: time::Instant,
 }
 
 pub(crate) static GLOBAL_CALLS: OnceLock<RwLock<HashMap<String, VecDeque<TrackedCall>>>> =
@@ -34,6 +35,8 @@ macro_rules! _push_global_call {
         // }
         // tracing::error!(call_str);
         tracing::trace!("{} calls pending for {}", entry.len(), key);
+
+        drop(map);
     }};
 }
 
@@ -54,7 +57,9 @@ macro_rules! _pop_global_call {
             name,
             $val,
             entry.len(),
-        )
+        );
+
+        drop(map);
     }};
 }
 
@@ -66,5 +71,7 @@ macro_rules! _global_calls_for_state {
         let mut map = handle.write().await;
         let key = std::any::type_name::<$ty>().to_string();
         map.entry(key).or_default().clone()
+
+        drop(map);
     }};
 }

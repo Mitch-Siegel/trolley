@@ -1,3 +1,5 @@
+use std::any;
+
 use tokio::sync::mpsc;
 
 use crate::router::{EventSender, RouterBase, RouterPriv};
@@ -7,24 +9,25 @@ pub struct RouterCtx<State>
 where
     State: RouterBase + RouterPriv,
 {
-    event_tx: mpsc::Sender<<State as RouterBase>::Event>,
-    internal_event_tx: mpsc::Sender<<State as RouterPriv>::InternalEvent>,
-    notif_tx: mpsc::Sender<<State as RouterBase>::Notif>,
+    events: mpsc::Sender<<State as RouterBase>::Event>,
+    internal_events: mpsc::Sender<<State as RouterPriv>::InternalEvent>,
+    notifs: mpsc::Sender<<State as RouterBase>::Notif>,
 }
 
 impl<State> RouterCtx<State>
 where
     State: RouterBase + RouterPriv,
 {
-    pub fn new(
-        event_tx: mpsc::Sender<<State as RouterBase>::Event>,
-        internal_event_tx: mpsc::Sender<<State as RouterPriv>::InternalEvent>,
-        notif_tx: mpsc::Sender<<State as RouterBase>::Notif>,
+    #[must_use]
+    pub const fn new(
+        events: mpsc::Sender<<State as RouterBase>::Event>,
+        internal_events: mpsc::Sender<<State as RouterPriv>::InternalEvent>,
+        notifs: mpsc::Sender<<State as RouterBase>::Notif>,
     ) -> Self {
         Self {
-            event_tx,
-            internal_event_tx,
-            notif_tx,
+            events,
+            internal_events,
+            notifs,
         }
     }
 
@@ -35,12 +38,12 @@ where
                 tracing::error!(
                     "unable to send event: {}\nSomething has gone badly wrong transmitting {}",
                     e,
-                    std::any::type_name::<T>(),
+                    any::type_name::<T>(),
                 );
                 panic!(
                     "unable to send event: {}\nSomething has gone badly wrong transmitting {}",
                     e,
-                    std::any::type_name::<T>(),
+                    any::type_name::<T>(),
                 );
             }
         }
@@ -48,38 +51,50 @@ where
 
     #[tracing::instrument(level = "trace", skip(self))]
     pub async fn send_event(&self, event: <State as RouterBase>::Event) {
-        Self::expect_send(self.event_tx.send(event).await);
+        Self::expect_send(self.events.send(event).await);
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn send_internal_event(&self, internal_event: <State as RouterPriv>::InternalEvent) {
-        Self::expect_send(self.internal_event_tx.blocking_send(internal_event));
+        Self::expect_send(self.internal_events.blocking_send(internal_event));
     }
 
+    /// Send a notification to the router
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the notification channel is full
     #[tracing::instrument(level = "trace", skip(self))]
     pub fn notify(
         &self,
         notif: <State as RouterBase>::Notif,
-    ) -> Result<(), tokio::sync::mpsc::error::TrySendError<<State as RouterBase>::Notif>> {
-        self.notif_tx.try_send(notif)
+    ) -> Result<(), mpsc::error::TrySendError<<State as RouterBase>::Notif>> {
+        self.notifs.try_send(notif)
     }
 
+    /// Send an internal event to the router
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the internal event channel is full
     #[tracing::instrument(level = "trace", skip(self))]
     pub async fn send_internal_event_async(
         &self,
         internal_event: <State as RouterPriv>::InternalEvent,
-    ) -> Result<(), tokio::sync::mpsc::error::TrySendError<<State as RouterPriv>::InternalEvent>>
-    {
-        self.internal_event_tx.try_send(internal_event)
+    ) -> Result<(), mpsc::error::TrySendError<<State as RouterPriv>::InternalEvent>> {
+        self.internal_events.try_send(internal_event)
     }
 
+    // TODO: panics (docs)
     #[tracing::instrument(level = "trace", skip(self))]
     pub async fn notify_async(&self, notif: <State as RouterBase>::Notif) {
-        Self::expect_send(self.notif_tx.send(notif).await);
+        Self::expect_send(self.notifs.send(notif).await);
     }
 
+    // TODO: panics (docs)
+    #[must_use]
     pub fn internal_events(&self) -> EventSender<<State as RouterPriv>::InternalEvent> {
-        EventSender::from(self.internal_event_tx.clone())
+        EventSender::from(self.internal_events.clone())
     }
 }
 
@@ -89,9 +104,9 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            event_tx: self.event_tx.clone(),
-            internal_event_tx: self.internal_event_tx.clone(),
-            notif_tx: self.notif_tx.clone(),
+            events: self.events.clone(),
+            internal_events: self.internal_events.clone(),
+            notifs: self.notifs.clone(),
         }
     }
 }

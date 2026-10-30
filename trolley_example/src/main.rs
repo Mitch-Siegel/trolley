@@ -1,12 +1,30 @@
 use trolley::{Router, RouterBase, router::RouterPriv};
 
 use std::sync::Arc;
-use tokio::{sync::RwLock, task::JoinSet, time::Duration};
+use tokio::{
+    sync::RwLock,
+    task::JoinSet,
+    time::{Duration, sleep},
+};
 
+#[allow(clippy::all)]
+#[allow(clippy::absolute_paths)]
+#[allow(clippy::use_self)]
 pub mod services {
     include!(concat!(env!("OUT_DIR"), "/trolley_call_ctx.rs"));
 }
-include!(concat!(env!("OUT_DIR"), "/trolley_calculator.rs"));
+
+#[allow(clippy::all)]
+#[allow(clippy::absolute_paths)]
+#[allow(clippy::wildcard_imports)]
+#[allow(clippy::use_self)]
+#[allow(clippy::elidable_lifetime_names)]
+#[allow(clippy::semicolon_if_nothing_returned)]
+mod generated {
+    use super::*;
+    include!(concat!(env!("OUT_DIR"), "/trolley_calculator.rs"));
+}
+pub use generated::*;
 
 #[derive(Debug)]
 pub enum AdditionError {
@@ -22,22 +40,19 @@ impl Calculator {
             if let Some(battery) = &mut *maybe_battery {
                 if battery.charge == 0 {
                     return Err(AdditionError::BatteryDepleted);
-                } else {
-                    battery.charge -= 1;
                 }
+                battery.charge -= 1;
             } else {
                 return Err(AdditionError::BatteryMissing);
             }
         }
 
         println!("starting addition");
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        sleep(Duration::from_millis(500)).await;
         let result = a + b;
-        println!("{}+{}={}", a, b, result);
+        println!("{a}+{b}={result}");
         Ok(result)
     }
-
-    pub async fn change_batteries(&mut self) {}
 }
 
 #[derive(Debug)]
@@ -55,6 +70,7 @@ pub struct Calculator {
 }
 
 impl Calculator {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             battery: Arc::new(RwLock::new(Some(Battery { charge: 100 }))),
@@ -128,10 +144,15 @@ async fn main() {
     }
     tracing::info!("done spawning tasks");
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-    handle.0.notify(CalculatorNotif::BatteryRemoved).await;
+    sleep(Duration::from_secs(1)).await;
+    handle
+        .notify_async(CalculatorNotif::BatteryRemoved)
+        .await
+        .unwrap();
 
     while let Some(res) = really_hard_tasks.join_next().await {
         tracing::info!("{:?}", res);
     }
+
+    handle.shutdown().await;
 }

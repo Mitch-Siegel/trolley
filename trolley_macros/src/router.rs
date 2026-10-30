@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned};
 use syn::{parse2, spanned::Spanned};
 
-pub fn router(item: TokenStream) -> TokenStream {
+pub(crate) fn router(item: TokenStream) -> TokenStream {
     let input: syn::DeriveInput = match parse2(item) {
         Ok(parsed) => parsed,
         Err(e) => return e.to_compile_error(),
@@ -30,7 +30,7 @@ pub fn router(item: TokenStream) -> TokenStream {
     }
 }
 
-pub fn router_meta(attribute_args: TokenStream, item: TokenStream) -> TokenStream {
+pub(crate) fn router_meta(attribute_args: TokenStream, item: TokenStream) -> TokenStream {
     let router_type: syn::Type = match parse2(attribute_args) {
         Ok(parsed) => parsed,
         Err(e) => return e.to_compile_error(),

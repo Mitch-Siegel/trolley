@@ -1,14 +1,18 @@
+use std::{env, path};
+
+use trolley::{generate_call_ctxs, interface};
+
 fn main() {
     println!("cargo:rerun-if-changed=src/");
 
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let src_dir = std::path::PathBuf::from(manifest_dir).join("src/");
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let src_dir = path::PathBuf::from(manifest_dir).join("src/");
 
-    trolley::generate_call_ctx(std::path::Path::new("trolley_call_ctx.rs"));
+    generate_call_ctxs(path::Path::new("trolley_call_ctx.rs"));
 
-    trolley::interface::generator(
+    interface::generator(
         &[&src_dir],
-        std::path::Path::new("trolley_calculator.rs"),
+        path::Path::new("trolley_calculator.rs"),
         &["services"],
     );
 }

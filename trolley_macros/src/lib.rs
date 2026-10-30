@@ -5,7 +5,7 @@ mod service;
 
 #[proc_macro_attribute]
 pub fn interface(attribute_args: TokenStream, item: TokenStream) -> TokenStream {
-    service::interface(attribute_args.into(), item.into(), true).into()
+    service::interface(&attribute_args.into(), item.into(), true).into()
 }
 
 #[proc_macro_derive(Router, attributes(router_events, params))]

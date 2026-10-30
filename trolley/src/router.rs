@@ -1,6 +1,9 @@
 use std::{
-    fmt,
-    sync::{Arc, atomic::AtomicBool},
+    any, fmt,
+    sync::{
+        Arc,
+        atomic::{self, AtomicBool},
+    },
 };
 
 use async_trait::async_trait;
@@ -26,7 +29,7 @@ pub use router_handle::RouterHandle;
 
 mod private {
     use async_trait::async_trait;
-    use std::fmt;
+    use std::{any, fmt};
 
     use crate::{RouterBase, RouterCtx};
 
@@ -39,7 +42,7 @@ mod private {
 
         #[allow(unused)]
         fn handle_internal_event(&self, internal: Self::InternalEvent) {
-            unimplemented!("{}", std::any::type_name::<Self>());
+            unimplemented!("{}", any::type_name::<Self>());
         }
     }
 
@@ -59,7 +62,7 @@ pub trait RouterBase: Send + Sync + 'static {
 
     #[allow(unused)]
     fn handle_notification(&mut self, notif: Self::Notif) {
-        unimplemented!("{}", std::any::type_name::<Self>());
+        unimplemented!("{}", any::type_name::<Self>());
     }
 
     async fn shutdown(self) -> Self::ShutdownResult;
@@ -86,46 +89,41 @@ async fn cmd_rx_loop<State>(
 
                 loop {
                     let guard = circuit_breaker.lock().await;
-                    match guard.clone().try_acquire_owned() {
-                        Ok(permit) => {
-                            tracing::trace!("acquired permit");
+                    if let Ok(permit) = guard.clone().try_acquire_owned() {
+                        tracing::trace!("acquired permit");
 
-                            #[cfg(not(feature = "route_spans"))]
-                            let span = tracing::Span::current();
-                            #[cfg(feature = "route_spans")]
-                            let span = routed.span().clone();
+                        #[cfg(not(feature = "route_spans"))]
+                        let span = tracing::Span::current();
+                        #[cfg(feature = "route_spans")]
+                        let span = routed.span().clone();
 
-                            let run_with_permit =
-                                |permit: OwnedSemaphorePermit,
-                                 state_handle: Arc<RwLock<State>>,
-                                 routed: Box<dyn routed::AnyCall<State>>,
-                                 permits_tx: broadcast::Sender<()>| async move {
-                                    routed.run(state_handle).instrument(span).await;
-                                    permits_tx
-                                        .send(())
-                                        .expect("unable to send permit availability broadcast");
-                                    drop(permit);
-                                };
+                        let run_with_permit =
+                            |permit: OwnedSemaphorePermit,
+                                state_handle: Arc<RwLock<State>>,
+                                routed: Box<dyn routed::AnyCall<State>>,
+                                permits_tx: broadcast::Sender<()>| async move {
+                                routed.run(state_handle).instrument(span).await;
+                                permits_tx
+                                    .send(())
+                                    .expect("unable to send permit availability broadcast");
+                                drop(permit);
+                            };
 
-                            tokio::spawn(run_with_permit(
-                                permit,
-                                state_handle.clone(),
-                                routed,
-                                permits_tx.clone(),
-                            ));
-                            break;
-                        }
-                        Err(_) => {
-                            tracing::trace!("no permits to acquire - awaiting permit availability");
-                            match permits_rx.recv().await {
-                                Ok(()) => (),
-                                Err(broadcast::error::RecvError::Lagged(_)) => (),
-                                other => panic!(
-                                    "unable to receive permit availability broadcast: {:?}",
-                                    other
-                                ),
-                            }
-                        }
+                        tokio::spawn(run_with_permit(
+                            permit,
+                            state_handle.clone(),
+                            routed,
+                            permits_tx.clone(),
+                        ));
+                        break;
+                    }
+                    tracing::trace!("no permits to acquire - awaiting permit availability");
+                    match permits_rx.recv().await {
+                        Ok(()) |
+                        Err(broadcast::error::RecvError::Lagged(_)) => (),
+                        other => panic!(
+                            "unable to receive permit availability broadcast: {other:?}",
+                        ),
                     }
                 }
             },
@@ -205,6 +203,7 @@ async fn internal_event_rx_loop<State>(
                                  permits_tx: broadcast::Sender<()>| async move {
                                     let state = state_handle.read().await;
                                     state.handle_internal_event(internal_event);
+                                    drop(state);
                                     permits_tx
                                         .send(())
                                         .expect("unable to send permit availability broadcast");
@@ -249,18 +248,15 @@ async fn shutdown_handler<State>(
     shutdown_cmd_rx
         .await
         .expect("unable to receive shutdown message");
-    alive.store(false, std::sync::atomic::Ordering::Relaxed);
+    alive.store(false, atomic::Ordering::Relaxed);
     internal_shutdown_tx
         .send(())
         .expect("unable to transmit internal shutdown message");
     worker_loops.join_all().await;
     tracing::debug!("all worker loops joined");
-    let state: State = match Arc::try_unwrap(state_handle) {
-        Ok(state) => state,
-
-        Err(_) => panic!("unable to take singular ownership over state during shutdown"),
-    }
-    .into_inner();
+    let state: State = Arc::try_unwrap(state_handle)
+        .unwrap_or_else(|_| panic!("unable to take singular ownership over state during shutdown"))
+        .into_inner();
     let result = state.shutdown().await;
     shutdown_cmd_done_tx
         .send(result)
@@ -350,7 +346,7 @@ pub trait Router: RouterBase + RouterPriv {
 
         tokio::spawn(
             shutdown_handler(
-                state_handle.clone(),
+                state_handle,
                 shutdown_cmd_rx,
                 shutdown_cmd_done_tx,
                 internal_shutdown_tx,

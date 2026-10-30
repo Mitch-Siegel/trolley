@@ -3,7 +3,7 @@ use std::{error, fmt, marker, sync::Arc};
 use async_trait::async_trait;
 use tokio::{
     sync::{RwLock, RwLockReadGuard, RwLockWriteGuard, oneshot},
-    time::{Duration, Instant, timeout},
+    time::{self, Duration, Instant, timeout},
 };
 use tracing::{Instrument, Span};
 
@@ -15,15 +15,17 @@ use crate::{Service, ServiceMut};
 async fn await_with_timeout<F>(
     f: F,
     duration: Duration,
-) -> Result<(<F as Future>::Output, tokio::time::Duration), tokio::time::error::Elapsed>
+) -> Result<(<F as Future>::Output, Duration), time::error::Elapsed>
 where
     F: Future,
 {
-    let start = tokio::time::Instant::now();
+    let start = Instant::now();
     match timeout(duration, f).await {
         Ok(result) => {
             let end = Instant::now();
-            let remaining = duration - (end - start);
+            let remaining = duration
+                .checked_sub(end - start)
+                .expect("overflow in timeout calculation");
             Ok((result, remaining))
         }
         Err(e) => Err(e),
@@ -56,7 +58,7 @@ pub struct RoutedInner<Input, Output> {
 }
 
 impl<Input, Output> RoutedInner<Input, Output> {
-    pub fn new(
+    pub const fn new(
         input: Input,
         rsp_tx: oneshot::Sender<Result<Output, RoutedCallError>>,
         timeout: RoutedCallTimeout,
@@ -71,29 +73,33 @@ impl<Input, Output> RoutedInner<Input, Output> {
     }
 }
 
-async fn acquire_state_read<'a, State>(
-    state_handle: &'a RwLock<State>,
+async fn acquire_state_read<State>(
+    state_handle: &RwLock<State>,
     timeout: Duration,
-) -> Result<(RwLockReadGuard<'a, State>, Duration), RoutedCallError> {
-    match await_with_timeout(state_handle.read(), timeout).await {
-        Ok((state, remaining)) => Ok((state, remaining)),
-        Err(_) => {
-            tracing::error!("timed out waiting for read lock on state handle");
-            Err(RoutedCallError::Timeout(Timeout::RwLockTimeout(timeout)))
-        }
+) -> Result<(RwLockReadGuard<'_, State>, Duration), RoutedCallError>
+where
+    State: Sync + Send,
+{
+    if let Ok((state, remaining)) = await_with_timeout(state_handle.read(), timeout).await {
+        Ok((state, remaining))
+    } else {
+        tracing::error!("timed out waiting for read lock on state handle");
+        Err(RoutedCallError::Timeout(Timeout::RwLockTimeout(timeout)))
     }
 }
 
-async fn acquire_state_write<'a, State>(
-    state_handle: &'a RwLock<State>,
+async fn acquire_state_write<State>(
+    state_handle: &RwLock<State>,
     timeout: Duration,
-) -> Result<(RwLockWriteGuard<'a, State>, Duration), RoutedCallError> {
-    match await_with_timeout(state_handle.write(), timeout).await {
-        Ok(s) => Ok(s),
-        Err(_) => {
-            tracing::error!("timed out waiting for read lock on state handle");
-            Err(RoutedCallError::Timeout(Timeout::RwLockTimeout(timeout)))
-        }
+) -> Result<(RwLockWriteGuard<'_, State>, Duration), RoutedCallError>
+where
+    State: Sync + Send,
+{
+    if let Ok((state, remaining)) = await_with_timeout(state_handle.write(), timeout).await {
+        Ok((state, remaining))
+    } else {
+        tracing::error!("timed out waiting for read lock on state handle");
+        Err(RoutedCallError::Timeout(Timeout::RwLockTimeout(timeout)))
     }
 }
 
@@ -156,7 +162,9 @@ where
         let (state, lock_time, exec_timeout) = match self.inner.timeout {
             RoutedCallTimeout::Single(t) => match acquire_state_read(&state_handle, t).await {
                 Ok((state, remaining)) => {
-                    let lock_time = t - remaining;
+                    let lock_time = t
+                        .checked_sub(remaining)
+                        .expect("lock time exceeded total timeout time");
                     tracing::trace!(
                         "acquired state read handle in {:?}, {:?} remaining to execute call",
                         lock_time,
@@ -177,7 +185,9 @@ where
                 exec_timeout,
             } => match acquire_state_read(&state_handle, state_timeout).await {
                 Ok((state, remaining)) => {
-                    let lock_time = state_timeout - remaining;
+                    let lock_time = state_timeout
+                        .checked_sub(remaining)
+                        .expect("lock time exceeded state timeout time");
                     tracing::trace!(
                         "acquired state read handle in {:?}, {:?} to execute call",
                         lock_time,
@@ -256,7 +266,9 @@ where
         let (mut state, lock_time, exec_timeout) = match self.inner.timeout {
             RoutedCallTimeout::Single(t) => match acquire_state_write(&state_handle, t).await {
                 Ok((state, remaining)) => {
-                    let lock_time = t - remaining;
+                    let lock_time = t
+                        .checked_sub(remaining)
+                        .expect("lock time exceeded total timeout time");
                     tracing::trace!(
                         "acquired state write handle in {:?}, {:?} remaining to execute call",
                         lock_time,
@@ -277,9 +289,11 @@ where
                 exec_timeout,
             } => match acquire_state_write(&state_handle, state_timeout).await {
                 Ok((state, remaining)) => {
-                    let lock_time = state_timeout - remaining;
+                    let lock_time = state_timeout
+                        .checked_sub(remaining)
+                        .expect("lock time exceeded state timeout time");
                     tracing::trace!(
-                        "acquired state read handle in {:?}, {:?} to execute call",
+                        "acquired state write handle in {:?}, {:?} to execute call",
                         lock_time,
                         state_timeout
                     );
@@ -331,12 +345,11 @@ impl fmt::Display for Timeout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::RwLockTimeout(duration) => {
-                write!(f, "timed out waiting for rwlock on state ({:?})", duration)
+                write!(f, "timed out waiting for rwlock on state ({duration:?})")
             }
             Self::ExecuteTimeout(lock_duration, execution_duration) => write!(
                 f,
-                "timed out executing call ({:?} spent acquiring lock, {:?} spent in call)",
-                lock_duration, execution_duration
+                "timed out executing call ({lock_duration:?} spent acquiring lock, {execution_duration:?} spent in call)",
             ),
         }
     }
@@ -351,10 +364,10 @@ pub enum RoutedCallError {
 impl fmt::Display for RoutedCallError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Timeout(t) => write!(f, "{}", t),
+            Self::Timeout(t) => write!(f, "{t}"),
             Self::RouterShutdown => write!(f, "router was shut down"),
         }
     }
 }
 
-impl std::error::Error for RoutedCallError {}
+impl error::Error for RoutedCallError {}

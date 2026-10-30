@@ -7,4 +7,10 @@ edition = "2024"
 convert_case = "0.11.0"
 proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
 quote = "1.0.45"
-syn = { version = "2.0.117", features = ["full"] }
+syn = { version = "3.0.9", features = ["full", "parsing"] }
+
+[lints]
+workspace = true
+
+[clippy.lints]
+workspace = true

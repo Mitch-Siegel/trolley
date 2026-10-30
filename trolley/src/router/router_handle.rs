@@ -1,6 +1,9 @@
 use std::{
     fmt, marker,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{self, AtomicBool},
+    },
 };
 
 use tokio::sync::{RwLock, mpsc, oneshot};
@@ -76,9 +79,10 @@ where
     State: Router,
 {
     pub async fn shutdown(self) -> <State as RouterBase>::ShutdownResult {
-        if !self.alive.load(std::sync::atomic::Ordering::Relaxed) {
-            panic!("shutdown called on router handle for which router was already shut down");
-        }
+        assert!(
+            self.alive.load(atomic::Ordering::Relaxed),
+            "shutdown called on router handle for which router was already shut down"
+        );
         let ShutdownChannels {
             shutdown_tx,
             shutdown_done_rx,
@@ -107,8 +111,18 @@ where
         result
     }
 
-    pub async fn notify(&self, notif: <State as RouterBase>::Notif) {
-        self.notif_tx.send(notif).await.expect("unable to tx notif");
+    pub fn notify(
+        &self,
+        notif: <State as RouterBase>::Notif,
+    ) -> Result<(), mpsc::error::SendError<<State as RouterBase>::Notif>> {
+        self.notif_tx.blocking_send(notif)
+    }
+
+    pub async fn notify_async(
+        &self,
+        notif: <State as RouterBase>::Notif,
+    ) -> Result<(), mpsc::error::SendError<<State as RouterBase>::Notif>> {
+        self.notif_tx.send(notif).await
     }
 
     /// Note that timeout is the *total* duration allowed for both acquiring the state handle *and* executing the call
