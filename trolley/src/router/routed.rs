@@ -359,6 +359,7 @@ impl fmt::Display for Timeout {
 pub enum RoutedCallError {
     Timeout(Timeout),
     RouterShutdown,
+    RecvError(oneshot::error::RecvError),
 }
 
 impl fmt::Display for RoutedCallError {
@@ -366,6 +367,7 @@ impl fmt::Display for RoutedCallError {
         match self {
             Self::Timeout(t) => write!(f, "{t}"),
             Self::RouterShutdown => write!(f, "router was shut down"),
+            Self::RecvError(e) => write!(f, "unable to receive response: {e}"),
         }
     }
 }

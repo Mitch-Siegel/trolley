@@ -105,8 +105,12 @@ where
     where
         Output: fmt::Debug,
     {
+        if !self.alive.load(atomic::Ordering::Relaxed) {
+            return Err(RoutedCallError::RouterShutdown);
+        }
+
         self.cmd_tx.send(routed).await.unwrap();
-        let result = rsp_rx.await.expect("unable to rx routed call result");
+        let result = rsp_rx.await.map_err(RoutedCallError::RecvError)?;
         _pop_global_call!(State, format!("{:?}", result));
         result
     }
@@ -115,6 +119,11 @@ where
         &self,
         notif: <State as RouterBase>::Notif,
     ) -> Result<(), mpsc::error::SendError<<State as RouterBase>::Notif>> {
+        #[allow(clippy::manual_assert)]
+        if !self.alive.load(atomic::Ordering::Relaxed) {
+            // FUTURE: return error here
+            panic!("router was shut down")
+        }
         self.notif_tx.blocking_send(notif)
     }
 
@@ -122,6 +131,11 @@ where
         &self,
         notif: <State as RouterBase>::Notif,
     ) -> Result<(), mpsc::error::SendError<<State as RouterBase>::Notif>> {
+        #[allow(clippy::manual_assert)]
+        if !self.alive.load(atomic::Ordering::Relaxed) {
+            // FUTURE: return error here
+            panic!("router was shut down")
+        }
         self.notif_tx.send(notif).await
     }
 
@@ -137,6 +151,10 @@ where
         Input: fmt::Debug + Send + 'static,
         <State as Service<Input>>::Output: Send,
     {
+        if !self.alive.load(atomic::Ordering::Relaxed) {
+            return Err(RoutedCallError::RouterShutdown);
+        }
+
         _push_global_call!(State, format!("{:?}", input));
         let (call, rsp_rx) = routed::Const::new(input, timeout);
         self.call_routed(Box::new(call), rsp_rx).await
@@ -153,6 +171,10 @@ where
         Input: fmt::Debug + Send + 'static,
         <State as ServiceMut<Input>>::Output: Send,
     {
+        if !self.alive.load(atomic::Ordering::Relaxed) {
+            return Err(RoutedCallError::RouterShutdown);
+        }
+
         _push_global_call!(State, format!("{:?}", input));
         let (call, rsp_rx) = routed::Mut::new(input, timeout);
         self.call_routed(Box::new(call), rsp_rx).await
