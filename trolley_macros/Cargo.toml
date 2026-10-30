@@ -14,8 +14,5 @@ proc-macro2 = "1.0.106"
 quote = "1.0.44"
 syn = { version = "3.0.9", features = ["full", "parsing" ]}
 
-[features]
-synchronous = []
-
 [lints]
 workspace = true

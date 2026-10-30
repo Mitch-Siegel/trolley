@@ -15,7 +15,7 @@ pub use router::{
 };
 pub use trolley_macros::{Router, interface, router_meta};
 
-pub use traits::{InfallibleService, InfallibleServiceMut, Service, ServiceMut};
+pub use traits::{Service, ServiceMut};
 
 pub mod error {
     pub use crate::router::routed::Timeout;
