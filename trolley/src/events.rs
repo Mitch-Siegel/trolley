@@ -8,10 +8,10 @@ use std::{
 
 use tokio::{sync::mpsc, task::JoinHandle};
 
-pub struct EventSender<E> {
+pub struct Sender<E> {
     event_tx: mpsc::Sender<E>,
 }
-impl<E> EventSender<E>
+impl<E> Sender<E>
 where
     E: fmt::Debug,
 {
@@ -39,19 +39,19 @@ where
     }
 }
 
-impl<E> From<mpsc::Sender<E>> for EventSender<E> {
+impl<E> From<mpsc::Sender<E>> for Sender<E> {
     fn from(value: mpsc::Sender<E>) -> Self {
         Self { event_tx: value }
     }
 }
 
-impl<E> fmt::Debug for EventSender<E> {
+impl<E> fmt::Debug for Sender<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "event sender")
     }
 }
 
-impl<E> Clone for EventSender<E> {
+impl<E> Clone for Sender<E> {
     fn clone(&self) -> Self {
         Self {
             event_tx: self.event_tx.clone(),
@@ -59,12 +59,12 @@ impl<E> Clone for EventSender<E> {
     }
 }
 
-pub struct EventReceiver<E> {
+pub struct Receiver<E> {
     event_rx: mpsc::Receiver<E>,
     router_alive: Arc<AtomicBool>,
 }
 
-impl<E> EventReceiver<E>
+impl<E> Receiver<E>
 where
     E: Send + 'static,
 {
@@ -75,6 +75,7 @@ where
         }
     }
 
+    // FUTURE: konw when router is shut down and exit (gracefully) automatically
     pub fn spawn_handler<HdlrCtx, F>(
         mut self,
         hdlr: impl Fn(E, HdlrCtx) -> F + Send + Sync + 'static,
@@ -107,7 +108,7 @@ where
     }
 }
 
-impl<E> fmt::Debug for EventReceiver<E>
+impl<E> fmt::Debug for Receiver<E>
 where
     E: Send + Sync,
 {

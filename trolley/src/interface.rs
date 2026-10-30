@@ -73,7 +73,7 @@ fn generate_handle(
     // be explicit. be very explicit.
     let generated_handle = quote! {
         impl #impl_generics #base_path_stream #ty_generics #maybe_where_clause {
-            pub async fn spawn( meta: <Self as ::trolley::RouterPriv>::Meta, n_concurrent: u32) -> (#handle_type_name #ty_generics, ::trolley::EventReceiver<<#base_path_stream #ty_generics as ::trolley::RouterBase>::Event>) {
+            pub async fn spawn( meta: <Self as ::trolley::RouterPriv>::Meta, n_concurrent: u32) -> (#handle_type_name #ty_generics, ::trolley::events::Receiver<<#base_path_stream #ty_generics as ::trolley::RouterBase>::Event>) {
                 let (raw_handle, event_rx) =
                     <Self as ::trolley::Router>::spawn_from_meta(meta, n_concurrent).await;
 
@@ -81,7 +81,7 @@ fn generate_handle(
             }
         }
 
-        pub struct #handle_type_name #ty_generics (::trolley::RouterHandle<#base_path_stream #ty_generics>) #maybe_where_clause;
+        pub struct #handle_type_name #ty_generics (::trolley::router::Handle<#base_path_stream #ty_generics>) #maybe_where_clause;
 
         impl #impl_generics ::core::clone::Clone for #handle_type_name #ty_generics #maybe_where_clause {
             fn clone(&self) -> Self {
@@ -96,8 +96,8 @@ fn generate_handle(
             }
         }
 
-        impl #impl_generics From<::trolley::RouterHandle<#base_path_stream #ty_generics>> for #handle_type_name #ty_generics #maybe_where_clause {
-            fn from(value: ::trolley::RouterHandle<#base_path_stream #ty_generics>) -> Self {
+        impl #impl_generics From<::trolley::router::Handle<#base_path_stream #ty_generics>> for #handle_type_name #ty_generics #maybe_where_clause {
+            fn from(value: ::trolley::router::Handle<#base_path_stream #ty_generics>) -> Self {
                 Self(value)
             }
         }
@@ -188,7 +188,7 @@ fn generate_call_ctx_method(
     quote! {
         impl<'a #(, #generic_params)*> #call_ctx<'a, #self_ty> #maybe_where_clause {
             pub async fn #name(&self, #( #arg_names: #arg_types ),* ) ->
-                ::std::result::Result<#ret_ty, ::trolley::RoutedCallError>
+                ::std::result::Result<#ret_ty, ::trolley::routed::Error>
             where #self_ty: #router_trait<#full_struct_target, Output = #ret_ty>
             {
                 let input = #full_struct_expr;
@@ -198,7 +198,7 @@ fn generate_call_ctx_method(
 
         // impl<'a> #retry_call_ctx<'a, #self_ty> where #full_struct_target: Clone {
         //     pub async fn #name(&self, #( #arg_names: #arg_types ),* ) ->
-        //         ::std::result::Result<#ret_ty, ::trolley::RoutedCallError>
+        //         ::std::result::Result<#ret_ty, ::trolley::routed::Error>
         //     where #self_ty: #router_trait<#full_struct_target, Output = #ret_ty>
         //     {
         //         let input = #full_struct_expr;

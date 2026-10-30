@@ -11,10 +11,8 @@ use tracing::instrument;
 
 use crate::{
     Service, ServiceMut,
-    router::{
-        Router, RouterBase,
-        routed::{self, RoutedCallError},
-    },
+    routed::{self, Timeout},
+    router::{Router, RouterBase},
 };
 
 struct ShutdownChannels<State>
@@ -24,7 +22,7 @@ where
     shutdown_tx: oneshot::Sender<()>,
     shutdown_done_rx: oneshot::Receiver<<State as RouterBase>::ShutdownResult>,
 }
-pub struct RouterHandle<State>
+pub struct Handle<State>
 where
     State: Router,
 {
@@ -41,11 +39,11 @@ where
     _state: marker::PhantomData<State>,
 }
 
-impl<State> RouterHandle<State>
+impl<State> Handle<State>
 where
     State: Router,
 {
-    pub fn new(
+    pub(crate) fn new(
         cmd_tx: mpsc::Sender<Box<dyn routed::AnyCall<State>>>,
         notif_tx: mpsc::Sender<<State as RouterBase>::Notif>,
         shutdown_tx: oneshot::Sender<()>,
@@ -65,7 +63,7 @@ where
     }
 }
 
-impl<State> Clone for RouterHandle<State>
+impl<State> Clone for Handle<State>
 where
     State: Router,
 {
@@ -80,7 +78,7 @@ where
     }
 }
 
-impl<State> RouterHandle<State>
+impl<State> Handle<State>
 where
     State: Router,
 {
@@ -89,6 +87,7 @@ where
             self.alive.load(atomic::Ordering::Relaxed),
             "shutdown called on router handle for which router was already shut down"
         );
+        // FIXME: TOCTOU for alive check
         let ShutdownChannels {
             shutdown_tx,
             shutdown_done_rx,
@@ -106,17 +105,18 @@ where
     async fn call_routed<Output>(
         &self,
         routed: Box<dyn routed::AnyCall<State>>,
-        rsp_rx: oneshot::Receiver<Result<Output, RoutedCallError>>,
-    ) -> Result<Output, RoutedCallError>
+        rsp_rx: oneshot::Receiver<Result<Output, routed::Error>>,
+    ) -> Result<Output, routed::Error>
     where
         Output: fmt::Debug,
     {
         if !self.alive.load(atomic::Ordering::Relaxed) {
-            return Err(RoutedCallError::RouterShutdown);
+            return Err(routed::Error::RouterShutdown);
         }
+        // FIXME: TOCTOU for alive check
 
         self.cmd_tx.send(routed).await.unwrap();
-        rsp_rx.await.map_err(RoutedCallError::RecvError)?
+        rsp_rx.await.map_err(routed::Error::RecvError)?
     }
 
     pub fn notify(
@@ -128,6 +128,7 @@ where
             // FUTURE: return error here
             panic!("router was shut down")
         }
+        // FIXME: TOCTOU for alive check
         self.notif_tx.blocking_send(notif)
     }
 
@@ -140,6 +141,7 @@ where
             // FUTURE: return error here
             panic!("router was shut down")
         }
+        // FIXME: TOCTOU for alive check
         self.notif_tx.send(notif).await
     }
 
@@ -148,15 +150,15 @@ where
     pub async fn call<Input>(
         &self,
         input: Input,
-        timeout: routed::RoutedCallTimeout,
-    ) -> Result<<State as Service<Input>>::Output, RoutedCallError>
+        timeout: Timeout,
+    ) -> Result<<State as Service<Input>>::Output, routed::Error>
     where
         State: Service<Input> + fmt::Debug + Send + Sync + 'static,
         Input: fmt::Debug + Send + 'static,
         <State as Service<Input>>::Output: Send,
     {
         if !self.alive.load(atomic::Ordering::Relaxed) {
-            return Err(RoutedCallError::RouterShutdown);
+            return Err(routed::Error::RouterShutdown);
         }
 
         let (call, rsp_rx) = routed::Const::new(input, timeout);
@@ -167,15 +169,15 @@ where
     pub async fn call_mut<Input>(
         &self,
         input: Input,
-        timeout: routed::RoutedCallTimeout,
-    ) -> Result<<State as ServiceMut<Input>>::Output, RoutedCallError>
+        timeout: Timeout,
+    ) -> Result<<State as ServiceMut<Input>>::Output, routed::Error>
     where
         State: ServiceMut<Input> + fmt::Debug + Send + Sync + 'static,
         Input: fmt::Debug + Send + 'static,
         <State as ServiceMut<Input>>::Output: Send,
     {
         if !self.alive.load(atomic::Ordering::Relaxed) {
-            return Err(RoutedCallError::RouterShutdown);
+            return Err(routed::Error::RouterShutdown);
         }
 
         let (call, rsp_rx) = routed::Mut::new(input, timeout);
@@ -183,7 +185,7 @@ where
     }
 }
 
-impl<State> fmt::Debug for RouterHandle<State>
+impl<State> fmt::Debug for Handle<State>
 where
     State: Router,
 {

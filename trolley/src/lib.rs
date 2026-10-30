@@ -5,21 +5,16 @@ use quote::quote;
 #[cfg(feature = "build")]
 use std::{env, fs, path};
 
+pub mod events;
 pub mod interface;
+pub mod routed;
 pub mod router;
 pub mod traits;
 
-pub use router::routed::{RoutedCallError, RoutedCallTimeout, Timeout};
-pub use router::{
-    EventReceiver, EventSender, Router, RouterBase, RouterCtx, RouterHandle, RouterMeta, RouterPriv,
-};
+pub use router::{Router, RouterBase, RouterMeta, RouterPriv};
 pub use trolley_macros::{Router, interface, router_meta};
 
 pub use traits::{Service, ServiceMut};
-
-pub mod error {
-    pub use crate::router::routed::Timeout;
-}
 
 #[macro_export]
 macro_rules! include_generated {
@@ -36,26 +31,26 @@ fn generate_call_ctx() -> TokenStream {
     pub struct CallCtx<'a, State>
     where State: ::trolley::Router
     {
-        handle: &'a ::trolley::RouterHandle<State>,
-        timeout: ::trolley::RoutedCallTimeout,
+        handle: &'a ::trolley::router::Handle<State>,
+        timeout: ::trolley::routed::Timeout,
     }
 
     impl<'a, State> CallCtx<'a, State>
     where State: ::trolley::Router
     {
         #[must_use]
-        pub const fn single_timeout(handle: &'a ::trolley::RouterHandle<State>, timeout: ::tokio::time::Duration) -> Self {
+        pub const fn single_timeout(handle: &'a ::trolley::router::Handle<State>, timeout: ::tokio::time::Duration) -> Self {
             Self {
                 handle,
-                timeout: ::trolley::RoutedCallTimeout::Single(timeout),
+                timeout: ::trolley::routed::Timeout::Single(timeout),
             }
         }
 
         #[must_use]
-        pub const fn explicit_timeouts(handle: &'a ::trolley::RouterHandle<State>, state_timeout: ::tokio::time::Duration, exec_timeout: ::tokio::time::Duration) -> Self {
+        pub const fn explicit_timeouts(handle: &'a ::trolley::router::Handle<State>, state_timeout: ::tokio::time::Duration, exec_timeout: ::tokio::time::Duration) -> Self {
             Self {
                 handle,
-                timeout: ::trolley::RoutedCallTimeout::Explicit{state_timeout, exec_timeout},
+                timeout: ::trolley::routed::Timeout::Explicit{state_timeout, exec_timeout},
             }
         }
 
@@ -71,7 +66,7 @@ fn generate_call_ctx() -> TokenStream {
         pub async fn call<Input>(
             &self,
             input: Input
-        ) -> ::std::result::Result<<State as ::trolley::Service<Input>>::Output, ::trolley::RoutedCallError>
+        ) -> ::std::result::Result<<State as ::trolley::Service<Input>>::Output, ::trolley::routed::Error>
         where
             State: ::trolley::Service<Input>,
             Input: ::std::fmt::Debug + Send + 'static,
@@ -83,7 +78,7 @@ fn generate_call_ctx() -> TokenStream {
         pub async fn call_mut<Input>(
             &self,
             input: Input
-        ) -> ::std::result::Result<<State as ::trolley::ServiceMut<Input>>::Output, ::trolley::RoutedCallError>
+        ) -> ::std::result::Result<<State as ::trolley::ServiceMut<Input>>::Output, ::trolley::routed::Error>
         where
             State: ::trolley::ServiceMut<Input>,
             Input: ::std::fmt::Debug + Send + 'static,
@@ -102,8 +97,8 @@ fn generate_retry_call_ctx() -> TokenStream {
     pub struct RetryCallCtx<'a, State>
     where State: ::trolley::Router
     {
-        handle: &'a ::trolley::RouterHandle<State>,
-        timeout: ::trolley::RoutedCallTimeout,
+        handle: &'a ::trolley::router::Handle<State>,
+        timeout: ::trolley::routed::Timeout,
         retries: u32,
     }
     impl<State> RetryCallCtx<'_, State>
@@ -112,7 +107,7 @@ fn generate_retry_call_ctx() -> TokenStream {
         pub async fn call<Input>(
             &self,
             input: Input
-        ) -> ::std::result::Result<<State as ::trolley::Service<Input>>::Output, ::trolley::RoutedCallError>
+        ) -> ::std::result::Result<<State as ::trolley::Service<Input>>::Output, ::trolley::routed::Error>
         where
             State: ::trolley::Service<Input>,
             Input: Clone + ::std::fmt::Debug + Send + Sync + 'static,
@@ -122,7 +117,7 @@ fn generate_retry_call_ctx() -> TokenStream {
                 let try_output =  self.handle.call(input.clone(), self.timeout).await;
                 match &try_output {
                     Ok(_) |
-                    Err(::trolley::RoutedCallError::RouterShutdown) => break try_output,
+                    Err(::trolley::routed::Error::RouterShutdown) => break try_output,
                     Err(_) => {
                         if self.retries > 0 {
                             continue;
@@ -136,7 +131,7 @@ fn generate_retry_call_ctx() -> TokenStream {
         pub async fn call_mut<Input>(
             &self,
             input: Input
-        ) -> ::std::result::Result<<State as ::trolley::ServiceMut<Input>>::Output, ::trolley::RoutedCallError>
+        ) -> ::std::result::Result<<State as ::trolley::ServiceMut<Input>>::Output, ::trolley::routed::Error>
         where
             State: ::trolley::ServiceMut<Input>,
             Input: Clone + ::std::fmt::Debug + Send + Sync + 'static,
@@ -146,7 +141,7 @@ fn generate_retry_call_ctx() -> TokenStream {
                 let try_output =  self.handle.call_mut(input.clone(), self.timeout).await;
                 match &try_output {
                     Ok(_) |
-                    Err(::trolley::RoutedCallError::RouterShutdown) => break try_output,
+                    Err(::trolley::routed::Error::RouterShutdown) => break try_output,
                     Err(_) => {
                         if self.retries > 0 {
                             continue;

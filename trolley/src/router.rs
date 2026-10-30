@@ -1,41 +1,36 @@
 use std::{
     any, fmt,
-    sync::{
-        Arc,
-        atomic::{self, AtomicBool},
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use async_trait::async_trait;
 use tokio::{
-    sync::{
-        Mutex, OwnedSemaphorePermit, RwLock, Semaphore, SemaphorePermit, broadcast, mpsc, oneshot,
-    },
-    task::{self, JoinSet},
+    sync::{Mutex, RwLock, Semaphore, broadcast, mpsc, oneshot},
+    task::JoinSet,
 };
 use tracing::Instrument;
 
-pub mod context;
-pub mod events;
-pub mod routed;
-pub mod router_handle;
+use crate::events;
 
-pub use context::RouterCtx;
-pub use events::{EventReceiver, EventSender};
-pub use router_handle::RouterHandle;
+mod context;
+mod handle;
+mod runtime;
+
+pub use context::Ctx;
+pub use handle::Handle;
 
 mod private {
     use async_trait::async_trait;
     use std::{any, fmt};
 
-    use crate::{RouterBase, RouterCtx};
+    use crate::{RouterBase, router};
 
     #[async_trait]
     pub trait RouterPriv: RouterBase + Sized {
         type InternalEvent: Send + fmt::Debug;
         type Meta: RouterMeta<RouterState = Self>;
 
-        async fn new(meta: Self::Meta, ctx: RouterCtx<Self>) -> Self;
+        async fn new(meta: Self::Meta, ctx: router::Ctx<Self>) -> Self;
 
         #[allow(unused)]
         fn handle_internal_event(&self, internal: Self::InternalEvent) {
@@ -64,214 +59,13 @@ pub trait RouterBase: Send + Sync + 'static {
 
     async fn shutdown(self) -> Self::ShutdownResult;
 }
-
-#[tracing::instrument(skip(cmd_rx, state_handle, circuit_breaker))]
-async fn cmd_rx_loop<State>(
-    mut cmd_rx: mpsc::Receiver<Box<dyn routed::AnyCall<State>>>,
-    state_handle: Arc<RwLock<State>>,
-    circuit_breaker: Arc<Mutex<Arc<Semaphore>>>,
-    mut permits_rx: broadcast::Receiver<()>,
-    permits_tx: broadcast::Sender<()>,
-    mut shutdown_cmd_rx: broadcast::Receiver<()>,
-) where
-    State: RouterBase + Send + Sync + 'static,
-{
-    loop {
-        tokio::select! {
-            // TODO: swap ordering of guard acquisition and cmd dequeueing from rx channel?
-            // needed if notifs should preempt rx of cmds
-            Some(routed) = cmd_rx.recv()=>{
-                tracing::trace!("received routed call {:?}", routed);
-                tracing::trace!("acquired circuit breaker lock");
-
-                loop {
-                    let guard = circuit_breaker.lock().await;
-                    if let Ok(permit) = guard.clone().try_acquire_owned() {
-                        tracing::trace!("acquired permit");
-
-                        #[cfg(not(feature = "route_spans"))]
-                        let span = tracing::Span::current();
-                        #[cfg(feature = "route_spans")]
-                        let span = routed.span().clone();
-
-                        let run_with_permit =
-                            |permit: OwnedSemaphorePermit,
-                                state_handle: Arc<RwLock<State>>,
-                                routed: Box<dyn routed::AnyCall<State>>,
-                                permits_tx: broadcast::Sender<()>| async move {
-                                routed.run(state_handle).instrument(span).await;
-                                permits_tx
-                                    .send(())
-                                    .expect("unable to send permit availability broadcast");
-                                drop(permit);
-                            };
-
-                        tokio::spawn(run_with_permit(
-                            permit,
-                            state_handle.clone(),
-                            routed,
-                            permits_tx.clone(),
-                        ));
-                        break;
-                    }
-                    tracing::trace!("no permits to acquire - awaiting permit availability");
-                    match permits_rx.recv().await {
-                        Ok(()) |
-                        Err(broadcast::error::RecvError::Lagged(_)) => (),
-                        other => panic!(
-                            "unable to receive permit availability broadcast: {other:?}",
-                        ),
-                    }
-                }
-            },
-            shutdown = shutdown_cmd_rx.recv()=> {
-                shutdown.expect("unable to receive internal shutdown broadcast");
-                return;
-            }
-        }
-    }
-}
-
-#[tracing::instrument(skip(notif_rx, state_handle, circuit_breaker))]
-async fn notif_rx_loop<State>(
-    mut notif_rx: mpsc::Receiver<<State as RouterBase>::Notif>,
-    n_concurrent: u32,
-    state_handle: Arc<RwLock<State>>,
-    circuit_breaker: Arc<Mutex<Arc<Semaphore>>>,
-    permits_tx: broadcast::Sender<()>,
-    mut shutdown_cmd_rx: broadcast::Receiver<()>,
-) where
-    State: RouterBase + Send + Sync + 'static,
-{
-    loop {
-        tokio::select! {Some(notif) = notif_rx.recv()=> {
-            tracing::trace!("received notifiction {:?}", notif);
-            let guard = circuit_breaker.lock().await;
-            tracing::trace!(
-                "holding circuit breaker lock & waiting for all outstanding requests to complete"
-            );
-
-            {
-                let _permits = guard
-                    .acquire_many(n_concurrent)
-                    .await
-                    .expect("unable to acquire permits for notif");
-                tracing::trace!("acquired all permits");
-
-                let mut state = state_handle.write().await;
-                // FUTURE: add documentation for the handle_notification() method describing that you can get yourself in trouble here
-                task::block_in_place(move || {state.handle_notification(notif)});
-            }
-            permits_tx
-                .send(())
-                .expect("unable to send permit availability broadcast");
-        },
-
-            shutdown= shutdown_cmd_rx.recv() => {
-                shutdown.expect("unable to receive internal shutdown broadcast");
-                return;
-            }
-        }
-    }
-}
-
-#[tracing::instrument(skip(internal_event_rx, state_handle, circuit_breaker))]
-async fn internal_event_rx_loop<State>(
-    mut internal_event_rx: mpsc::Receiver<<State as RouterPriv>::InternalEvent>,
-    state_handle: Arc<RwLock<State>>,
-    circuit_breaker: Arc<Mutex<Arc<Semaphore>>>,
-    mut permits_rx: broadcast::Receiver<()>,
-    permits_tx: broadcast::Sender<()>,
-    mut shutdown_cmd_rx: broadcast::Receiver<()>,
-) where
-    State: RouterBase + RouterPriv + Send + Sync + 'static,
-{
-    loop {
-        tokio::select! {Some(internal_event) = internal_event_rx.recv()=> {
-                loop {
-                    let guard = circuit_breaker.lock().await;
-                    match guard.try_acquire() {
-                        Ok(permit) => {
-                            tracing::trace!("acquired permit");
-
-                            let run_with_permit =
-                                |_permit: SemaphorePermit<'_>,
-                                 state_handle: Arc<RwLock<State>>,
-                                 permits_tx: broadcast::Sender<()>| async move {
-                                    let state = state_handle.read().await;
-                                    state.handle_internal_event(internal_event);
-                                    drop(state);
-                                    permits_tx
-                                        .send(())
-                                        .expect("unable to send permit availability broadcast");
-                                };
-
-                            tokio::spawn(run_with_permit(
-                                permit,
-                                state_handle.clone(),
-                                permits_tx.clone(),
-                            ));
-                            break;
-                        }
-                        Err(_) => {
-                            permits_rx
-                                .recv()
-                                .await
-                                .expect("unable to receive permit availability broadcast");
-                        }
-                    }
-                }
-            },
-
-                shutdown= shutdown_cmd_rx.recv() => {
-                    shutdown.expect("unable to receive internal shutdown broadcast");
-                    return;
-                }
-
-        }
-    }
-}
-
-async fn shutdown_handler<State>(
-    state_handle: Arc<RwLock<State>>,
-    shutdown_cmd_rx: oneshot::Receiver<()>,
-    shutdown_cmd_done_tx: oneshot::Sender<<State as RouterBase>::ShutdownResult>,
-    internal_shutdown_tx: broadcast::Sender<()>,
-    alive: Arc<AtomicBool>,
-    worker_loops: JoinSet<()>,
-) where
-    State: Router,
-{
-    shutdown_cmd_rx
-        .await
-        .expect("unable to receive shutdown message");
-    alive.store(false, atomic::Ordering::Relaxed);
-    internal_shutdown_tx
-        .send(())
-        .expect("unable to transmit internal shutdown message");
-    worker_loops.join_all().await;
-    tracing::debug!("all worker loops joined");
-    let state: State = Arc::try_unwrap(state_handle)
-        .unwrap_or_else(|_| panic!("unable to take singular ownership over state during shutdown"))
-        .into_inner();
-    let result = state.shutdown().await;
-    shutdown_cmd_done_tx
-        .send(result)
-        .expect("unable to send shutdown done response");
-}
-
 #[async_trait]
 pub trait Router: RouterBase + RouterPriv {
-    // type Handle: From<RouterHandle<Self>> + Clone;
-
     #[tracing::instrument(level = "debug", skip(n_concurrent, meta_args))]
     async fn spawn_from_meta(
         meta_args: impl Into<Self::Meta> + fmt::Debug + Send,
         n_concurrent: u32,
-    ) -> (
-        RouterHandle<Self>,
-        EventReceiver<<Self as RouterBase>::Event>,
-    ) {
+    ) -> (Handle<Self>, events::Receiver<<Self as RouterBase>::Event>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (notif_tx, notif_rx) = mpsc::channel(32);
 
@@ -285,7 +79,7 @@ pub trait Router: RouterBase + RouterPriv {
         let (internal_shutdown_tx, internal_shutdown_rx) = broadcast::channel(1);
         let alive = Arc::new(AtomicBool::new(true));
 
-        let handle = RouterHandle::<Self>::new(
+        let handle = Handle::<Self>::new(
             cmd_tx,
             notif_tx.clone(),
             shutdown_cmd_tx,
@@ -295,7 +89,7 @@ pub trait Router: RouterBase + RouterPriv {
 
         let state = Self::new(
             meta_args.into(),
-            RouterCtx::new(event_tx, internal_event_tx, notif_tx),
+            Ctx::new(event_tx, internal_event_tx, notif_tx),
         )
         .await;
 
@@ -306,7 +100,7 @@ pub trait Router: RouterBase + RouterPriv {
         let mut worker_loops = JoinSet::new();
 
         let _cmd_abort = worker_loops.spawn(
-            cmd_rx_loop(
+            runtime::cmd_rx_loop(
                 cmd_rx,
                 state_handle.clone(),
                 circuit_breaker.clone(),
@@ -318,7 +112,7 @@ pub trait Router: RouterBase + RouterPriv {
         );
 
         let _notif_abort = worker_loops.spawn(
-            notif_rx_loop(
+            runtime::notif_rx_loop(
                 notif_rx,
                 n_concurrent,
                 state_handle.clone(),
@@ -330,7 +124,7 @@ pub trait Router: RouterBase + RouterPriv {
         );
 
         let _internal_event_abort = worker_loops.spawn(
-            internal_event_rx_loop(
+            runtime::internal_event_rx_loop(
                 internal_event_rx,
                 state_handle.clone(),
                 circuit_breaker,
@@ -342,7 +136,7 @@ pub trait Router: RouterBase + RouterPriv {
         );
 
         tokio::spawn(
-            shutdown_handler(
+            runtime::shutdown_handler(
                 state_handle,
                 shutdown_cmd_rx,
                 shutdown_cmd_done_tx,
@@ -353,6 +147,6 @@ pub trait Router: RouterBase + RouterPriv {
             .instrument(tracing::Span::current()),
         );
 
-        (handle, EventReceiver::new(event_rx, alive))
+        (handle, events::Receiver::new(event_rx, alive))
     }
 }

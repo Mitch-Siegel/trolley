@@ -1,4 +1,4 @@
-use trolley::{Router, RouterBase, router::RouterPriv};
+use trolley::{Router, RouterBase, RouterPriv, router::Ctx};
 
 use std::sync::Arc;
 use tokio::{
@@ -94,7 +94,7 @@ impl RouterPriv for Calculator {
     type InternalEvent = ();
     type Meta = CalculatorMeta;
 
-    async fn new(_meta: Self::Meta, _ctx: trolley::RouterCtx<Self>) -> Self {
+    async fn new(_meta: Self::Meta, _ctx: Ctx<Self>) -> Self {
         Self::default()
     }
 
