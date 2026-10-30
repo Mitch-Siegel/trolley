@@ -28,6 +28,12 @@ pub struct RouterHandle<State>
 where
     State: Router,
 {
+    // FUTURE: monitoring/diagnostics:
+    // FUTURE: call queue depth monitoring
+    // FUTURE: notif queue depth monitoring
+    // FUTURE: internal event queue depth monitoring
+    // FUTURE: event queue depth monitoring
+    // FUTURE: time statistics (per call type and total?)
     cmd_tx: mpsc::Sender<Box<dyn routed::AnyCall<State>>>,
     notif_tx: mpsc::Sender<<State as RouterBase>::Notif>,
     shutdown_channels: Arc<RwLock<Option<ShutdownChannels<State>>>>,
@@ -110,9 +116,7 @@ where
         }
 
         self.cmd_tx.send(routed).await.unwrap();
-        let result = rsp_rx.await.map_err(RoutedCallError::RecvError)?;
-        _pop_global_call!(State, format!("{:?}", result));
-        result
+        rsp_rx.await.map_err(RoutedCallError::RecvError)?
     }
 
     pub fn notify(
@@ -155,7 +159,6 @@ where
             return Err(RoutedCallError::RouterShutdown);
         }
 
-        _push_global_call!(State, format!("{:?}", input));
         let (call, rsp_rx) = routed::Const::new(input, timeout);
         self.call_routed(Box::new(call), rsp_rx).await
     }
@@ -175,7 +178,6 @@ where
             return Err(RoutedCallError::RouterShutdown);
         }
 
-        _push_global_call!(State, format!("{:?}", input));
         let (call, rsp_rx) = routed::Mut::new(input, timeout);
         self.call_routed(Box::new(call), rsp_rx).await
     }

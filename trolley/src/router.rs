@@ -15,9 +15,6 @@ use tokio::{
 };
 use tracing::Instrument;
 
-#[macro_use]
-mod global_call_tracking;
-
 pub mod context;
 pub mod events;
 pub mod routed;
