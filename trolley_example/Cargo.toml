@@ -15,6 +15,3 @@ trolley = { workspace = true, features = ["build"] }
 
 [lints]
 workspace = true
-
-[clippy.lints]
-workspace = true

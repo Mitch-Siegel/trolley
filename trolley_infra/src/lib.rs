@@ -178,3 +178,8 @@ pub fn collect_service_impls(path: &path::Path) -> Vec<(String, syn::ItemImpl)> 
 
     impls
 }
+
+#[must_use]
+pub fn prettify_stream(stream: &TokenStream) -> String {
+    prettyplease::unparse(&syn::parse_file(&stream.to_string()).unwrap())
+}

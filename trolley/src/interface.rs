@@ -275,7 +275,7 @@ pub fn generator(
         path::PathBuf::from(env::var("OUT_DIR").expect("unable to get OUT_DIR"))
             .join(relative_out_path),
         // generated.to_string(),
-        prettyplease::unparse(&syn::parse_file(&generated.to_string()).unwrap()),
+        trolley_infra::prettify_stream(&generated),
     )
     .expect("failed to write generated file");
 }
