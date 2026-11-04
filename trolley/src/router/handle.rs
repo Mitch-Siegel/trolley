@@ -1,9 +1,6 @@
 use std::{
     fmt, marker,
-    sync::{
-        Arc,
-        atomic::{self, AtomicBool},
-    },
+    sync::{Arc, Weak},
 };
 
 use tokio::sync::{RwLock, mpsc, oneshot};
@@ -35,7 +32,7 @@ where
     cmd_tx: mpsc::Sender<Box<dyn routed::AnyCall<State>>>,
     notif_tx: mpsc::Sender<<State as RouterBase>::Notif>,
     shutdown_channels: Arc<RwLock<Option<ShutdownChannels<State>>>>,
-    alive: Arc<AtomicBool>,
+    alive: Weak<()>,
     _state: marker::PhantomData<State>,
 }
 
@@ -48,7 +45,7 @@ where
         notif_tx: mpsc::Sender<<State as RouterBase>::Notif>,
         shutdown_tx: oneshot::Sender<()>,
         shutdown_done_rx: oneshot::Receiver<<State as RouterBase>::ShutdownResult>,
-        alive: Arc<AtomicBool>,
+        alive: Weak<()>,
     ) -> Self {
         Self {
             cmd_tx,
@@ -78,24 +75,34 @@ where
     }
 }
 
+#[derive(Debug)]
+pub enum NotifyError {
+    RouterShutdown,
+}
+
+#[derive(Debug)]
+pub enum TryNotifyError<T> {
+    RouterShutdown,
+    Full(T),
+}
+
 impl<State> Handle<State>
 where
     State: Router,
 {
     pub async fn shutdown(self) -> <State as RouterBase>::ShutdownResult {
-        assert!(
-            self.alive.load(atomic::Ordering::Relaxed),
-            "shutdown called on router handle for which router was already shut down"
-        );
-        // FIXME: TOCTOU for alive check
+        let _guard = self.alive.upgrade().expect("router was already shut down");
+
         let ShutdownChannels {
             shutdown_tx,
             shutdown_done_rx,
-        } = self.shutdown_channels.write().await.take().unwrap();
+        } = self.shutdown_channels.write().await.take().expect("shutdown already in progress through another handle");
 
         shutdown_tx
             .send(())
             .expect("unable to transmit shutdown message to router");
+
+        drop(_guard);
 
         shutdown_done_rx
             .await
@@ -110,39 +117,37 @@ where
     where
         Output: fmt::Debug,
     {
-        if !self.alive.load(atomic::Ordering::Relaxed) {
-            return Err(routed::Error::RouterShutdown);
-        }
-        // FIXME: TOCTOU for alive check
+        let _guard = self.alive.upgrade().ok_or(routed::Error::RouterShutdown)?;
 
         self.cmd_tx.send(routed).await.unwrap();
         rsp_rx.await.map_err(routed::Error::RecvError)?
     }
 
-    pub async fn notify(
-        &self,
-        notif: <State as RouterBase>::Notif,
-    ) -> Result<(), mpsc::error::SendError<<State as RouterBase>::Notif>> {
-        #[allow(clippy::manual_assert)]
-        if !self.alive.load(atomic::Ordering::Relaxed) {
-            // FUTURE: return error here
-            panic!("router was shut down")
-        }
-        // FIXME: TOCTOU for alive check
-        self.notif_tx.send(notif).await
+    pub async fn notify(&self, notif: <State as RouterBase>::Notif) -> Result<(), NotifyError> {
+        let _guard = self.alive.upgrade().ok_or(NotifyError::RouterShutdown)?;
+
+        self.notif_tx
+            .send(notif)
+            .await
+            .expect("internal rx loop closed unexpectedly");
+        Ok(())
     }
 
-    pub fn blocking_notify(
+    pub fn try_notify(
         &self,
         notif: <State as RouterBase>::Notif,
-    ) -> Result<(), mpsc::error::SendError<<State as RouterBase>::Notif>> {
-        #[allow(clippy::manual_assert)]
-        if !self.alive.load(atomic::Ordering::Relaxed) {
-            // FUTURE: return error here
-            panic!("router was shut down")
+    ) -> Result<(), TryNotifyError<<State as RouterBase>::Notif>> {
+        let Some(_guard) = self.alive.upgrade() else {
+            return Err(TryNotifyError::RouterShutdown);
+        };
+
+        match self.notif_tx.try_send(notif) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                panic!("internal rx loop closed unexpectedly")
+            }
+            Err(mpsc::error::TrySendError::Full(msg)) => Err(TryNotifyError::Full(msg)),
         }
-        // FIXME: TOCTOU for alive check
-        self.notif_tx.blocking_send(notif)
     }
 
     /// Note that timeout is the *total* duration allowed for both acquiring the state handle *and* executing the call
@@ -157,10 +162,6 @@ where
         Input: fmt::Debug + Send + 'static,
         <State as Service<Input>>::Output: Send,
     {
-        if !self.alive.load(atomic::Ordering::Relaxed) {
-            return Err(routed::Error::RouterShutdown);
-        }
-
         let (call, rsp_rx) = routed::Const::new(input, timeout);
         self.call_routed(Box::new(call), rsp_rx).await
     }
@@ -176,10 +177,6 @@ where
         Input: fmt::Debug + Send + 'static,
         <State as ServiceMut<Input>>::Output: Send,
     {
-        if !self.alive.load(atomic::Ordering::Relaxed) {
-            return Err(routed::Error::RouterShutdown);
-        }
-
         let (call, rsp_rx) = routed::Mut::new(input, timeout);
         self.call_routed(Box::new(call), rsp_rx).await
     }

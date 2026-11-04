@@ -1,7 +1,4 @@
-use std::{
-    any, fmt,
-    sync::{Arc, atomic::AtomicBool},
-};
+use std::{any, fmt, sync::Arc};
 
 use async_trait::async_trait;
 use tokio::{
@@ -13,7 +10,7 @@ use tracing::Instrument;
 use crate::events;
 
 mod context;
-mod handle;
+pub mod handle;
 mod runtime;
 
 pub use context::Ctx;
@@ -77,14 +74,14 @@ pub trait Router: RouterBase + RouterPriv {
         let (shutdown_cmd_tx, shutdown_cmd_rx) = oneshot::channel();
         let (shutdown_cmd_done_tx, shutdown_cmd_done_rx) = oneshot::channel();
         let (internal_shutdown_tx, internal_shutdown_rx) = broadcast::channel(1);
-        let alive = Arc::new(AtomicBool::new(true));
+        let alive = Arc::new(());
 
         let handle = Handle::<Self>::new(
             cmd_tx,
             notif_tx.clone(),
             shutdown_cmd_tx,
             shutdown_cmd_done_rx,
-            alive.clone(),
+            Arc::downgrade(&alive),
         );
 
         let state = Self::new(
@@ -135,18 +132,20 @@ pub trait Router: RouterBase + RouterPriv {
             .instrument(tracing::Span::current()),
         );
 
+        let final_weak = Arc::downgrade(&alive);
+
         tokio::spawn(
             runtime::shutdown_handler(
                 state_handle,
                 shutdown_cmd_rx,
                 shutdown_cmd_done_tx,
                 internal_shutdown_tx,
-                alive.clone(),
+                alive,
                 worker_loops,
             )
             .instrument(tracing::Span::current()),
         );
 
-        (handle, events::Receiver::new(event_rx, alive))
+        (handle, events::Receiver::new(event_rx, final_weak))
     }
 }

@@ -101,13 +101,15 @@ fn generate_handle(
             }
 
             pub async fn notify(&self, notif: <#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif) ->
-                ::core::result::Result<(), ::tokio::sync::mpsc::error::SendError<<#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif>> {
+                ::core::result::Result<(), ::trolley::router::handle::NotifyError> {
                 self.0.notify(notif).await
             }
 
-            pub fn blocking_notify(&self, notif: <#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif) ->
-                ::core::result::Result<(), ::tokio::sync::mpsc::error::SendError<<#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif>> {
-                self.0.blocking_notify(notif)
+            // FUTURE: blocking_notify?
+
+            pub fn try_notify(&self, notif: <#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif) ->
+                ::core::result::Result<(), ::trolley::router::handle::TryNotifyError<<#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif>> {
+                self.0.try_notify(notif)
             }
 
             #[must_use]

@@ -1,10 +1,4 @@
-use std::{
-    any, fmt,
-    sync::{
-        Arc,
-        atomic::{self, AtomicBool},
-    },
-};
+use std::{any, fmt, sync::Weak};
 
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -61,14 +55,15 @@ impl<E> Clone for Sender<E> {
 
 pub struct Receiver<E> {
     event_rx: mpsc::Receiver<E>,
-    router_alive: Arc<AtomicBool>,
+    router_alive: Weak<()>,
 }
 
 impl<E> Receiver<E>
 where
     E: Send + 'static,
 {
-    pub const fn new(event_rx: mpsc::Receiver<E>, router_alive: Arc<AtomicBool>) -> Self {
+    #[must_use]
+    pub const fn new(event_rx: mpsc::Receiver<E>, router_alive: Weak<()>) -> Self {
         Self {
             event_rx,
             router_alive,
@@ -89,7 +84,8 @@ where
             while let Some(event) = self.event_rx.recv().await {
                 hdlr(event, hdlr_meta.clone()).await;
             }
-            if self.router_alive.load(atomic::Ordering::Relaxed) {
+
+            if self.router_alive.upgrade().is_none() {
                 tracing::warn!("fell out of event receiver for {:?}", any::type_name::<E>());
             }
         })

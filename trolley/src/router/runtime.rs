@@ -1,7 +1,4 @@
-use std::sync::{
-    Arc,
-    atomic::{self, AtomicBool},
-};
+use std::sync::Arc;
 
 use tokio::{
     sync::{
@@ -185,7 +182,7 @@ pub(crate) async fn shutdown_handler<State>(
     shutdown_cmd_rx: oneshot::Receiver<()>,
     shutdown_cmd_done_tx: oneshot::Sender<<State as RouterBase>::ShutdownResult>,
     internal_shutdown_tx: broadcast::Sender<()>,
-    alive: Arc<AtomicBool>,
+    alive: Arc<()>,
     worker_loops: JoinSet<()>,
 ) where
     State: Router,
@@ -193,7 +190,7 @@ pub(crate) async fn shutdown_handler<State>(
     shutdown_cmd_rx
         .await
         .expect("unable to receive shutdown message");
-    alive.store(false, atomic::Ordering::Relaxed);
+    drop(alive);
     internal_shutdown_tx
         .send(())
         .expect("unable to transmit internal shutdown message");
