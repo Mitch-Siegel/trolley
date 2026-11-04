@@ -85,8 +85,11 @@ where
                 hdlr(event, hdlr_meta.clone()).await;
             }
 
-            if self.router_alive.upgrade().is_none() {
-                tracing::warn!("fell out of event receiver for {:?}", any::type_name::<E>());
+            if self.router_alive.upgrade().is_some() {
+                tracing::warn!(
+                    "fell out of event receiver for {:?}, router still running",
+                    any::type_name::<E>()
+                );
             }
         })
     }

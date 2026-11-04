@@ -166,6 +166,12 @@ where
     _state: marker::PhantomData<State>,
 }
 
+fn respond_to_call<Output: fmt::Debug>(rsp_tx: oneshot::Sender<Output>, rsp: Output) {
+    if let Err(e) = rsp_tx.send(rsp) {
+        tracing::warn!("unable to write response: {e:?}");
+    }
+}
+
 pub(crate) type RoutedCallResult<State, Input> = Result<<State as Service<Input>>::Output, Error>;
 pub(crate) type RoutedMutCallResult<State, Input> =
     Result<<State as ServiceMut<Input>>::Output, Error>;
@@ -204,10 +210,7 @@ where
         {
             Ok(acquired) => acquired,
             Err(e) => {
-                self.inner
-                    .rsp_tx
-                    .send(Err(e))
-                    .expect("unable to respond to routed call");
+                respond_to_call(self.inner.rsp_tx, Err(e));
                 return;
             }
         };
@@ -220,10 +223,7 @@ where
         )
         .await;
 
-        self.inner
-            .rsp_tx
-            .send(result)
-            .expect("unable to respond to routed call");
+        respond_to_call(self.inner.rsp_tx, result);
     }
 
     fn span(&self) -> tracing::Span {
@@ -278,10 +278,7 @@ where
         {
             Ok(acquired) => acquired,
             Err(e) => {
-                self.inner
-                    .rsp_tx
-                    .send(Err(e))
-                    .expect("unable to respond to routed call");
+                respond_to_call(self.inner.rsp_tx, Err(e));
                 return;
             }
         };
@@ -294,10 +291,7 @@ where
         )
         .await;
 
-        self.inner
-            .rsp_tx
-            .send(result)
-            .expect("unable to respond to routed call");
+        respond_to_call(self.inner.rsp_tx, result);
     }
 
     fn span(&self) -> Span {

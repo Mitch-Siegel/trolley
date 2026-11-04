@@ -96,7 +96,12 @@ where
         let ShutdownChannels {
             shutdown_tx,
             shutdown_done_rx,
-        } = self.shutdown_channels.write().await.take().expect("shutdown already in progress through another handle");
+        } = self
+            .shutdown_channels
+            .write()
+            .await
+            .take()
+            .expect("shutdown already in progress through another handle");
 
         shutdown_tx
             .send(())
