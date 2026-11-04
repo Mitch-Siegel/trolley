@@ -1,0 +1,15 @@
+[package]
+name = "trolley_build"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+trolley_infra = { path = "../trolley_infra" }
+convert_case = "0.11.0"
+proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
+quote = "1.0.45"
+syn = { version = "3.0.9", features = ["full", "parsing"] }
+prettyplease = "0.3.0"
+
+[lints]
+workspace = true

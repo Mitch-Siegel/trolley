@@ -5,7 +5,8 @@ members = ["trolley", "trolley_macros", "trolley_infra", "trolley_example"]
 [workspace.dependencies]
 trolley = { path = "./trolley" }
 trolley_infra = { path = "./trolley_infra" }
-trolley_macros = { path = "./trolley_infra" }
+trolley_macros = { path = "./trolley_macros" }
+trolley_build = { path = "./trolley_build" }
 
 
 [workspace.lints.rust]

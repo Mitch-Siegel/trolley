@@ -4,20 +4,6 @@ use quote::{format_ident, quote};
 
 use trolley_infra::interface_generator::{self, GenericsTokenStreams};
 
-fn generate_call_ctx(
-    ctx_path_idents: &[proc_macro2::Ident],
-) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    let call_ctx = quote! {
-    crate::#( #ctx_path_idents )::*::CallCtx
-    };
-
-    let retry_call_ctx = quote! {
-    crate::#( #ctx_path_idents )::*::RetryCallCtx
-    };
-
-    (call_ctx, retry_call_ctx)
-}
-
 fn split_base_and_ident_from_ty_string(
     ty_string: &str,
 ) -> (proc_macro2::TokenStream, proc_macro2::Ident) {
@@ -61,14 +47,21 @@ fn generate_handle(
     generics: &GenericsTokenStreams,
     base_path_stream: &proc_macro2::TokenStream,
     handle_type_name: &proc_macro2::Ident,
-    call_ctx: &proc_macro2::TokenStream,
+    call_ctx_type_name: &proc_macro2::Ident,
 ) -> proc_macro2::TokenStream {
     let GenericsTokenStreams {
-        generic_params: _,
+        generic_params,
         impl_generics,
         ty_generics,
         maybe_where_clause,
     } = generics;
+
+    // The entire call context struct
+    let call_ctx_ty = if generic_params.is_empty() {
+        quote! { #call_ctx_type_name<'_> }
+    } else {
+        quote! { #call_ctx_type_name<'_, #( #generic_params ),*> }
+    };
 
     // be explicit. be very explicit.
     let generated_handle = quote! {
@@ -107,24 +100,28 @@ fn generate_handle(
                 self.0.shutdown().await
             }
 
-            pub fn notify(&self, notif: <#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif) ->
-                ::core::result::Result<(), ::tokio::sync::mpsc::error::SendError::<<#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif>> {
-                self.0.notify(notif)
+            pub async fn notify(&self, notif: <#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif) ->
+                ::core::result::Result<(), ::tokio::sync::mpsc::error::SendError<<#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif>> {
+                self.0.notify(notif).await
             }
 
-            pub async fn notify_async(&self, notif: <#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif) ->
-                ::core::result::Result<(), ::tokio::sync::mpsc::error::SendError::<<#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif>> {
-                self.0.notify_async(notif).await
-            }
-
-            #[must_use]
-            pub const fn with_timeout<'a>(&'a self, timeout: tokio::time::Duration) -> #call_ctx<'a, #base_path_stream #ty_generics> {
-                #call_ctx::single_timeout(&self.0, timeout)
+            pub fn blocking_notify(&self, notif: <#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif) ->
+                ::core::result::Result<(), ::tokio::sync::mpsc::error::SendError<<#base_path_stream #ty_generics as ::trolley::RouterBase>::Notif>> {
+                self.0.blocking_notify(notif)
             }
 
             #[must_use]
-            pub const fn with_explicit_timeouts<'a>(&'a self, state_timeout: tokio::time::Duration, exec_timeout: tokio::time::Duration) -> #call_ctx<'a, #base_path_stream #ty_generics> {
-                #call_ctx::explicit_timeouts(&self.0, state_timeout, exec_timeout)
+            pub const fn with_timeout(&self, timeout: ::tokio::time::Duration) -> #call_ctx_ty {
+                #call_ctx_type_name {
+                    inner: ::trolley::call_ctx::CallCtx::single_timeout(&self.0, timeout),
+                }
+            }
+
+            #[must_use]
+            pub const fn with_explicit_timeouts(&self, state_timeout: ::tokio::time::Duration, exec_timeout: ::tokio::time::Duration) -> #call_ctx_ty {
+                #call_ctx_type_name {
+                    inner: ::trolley::call_ctx::CallCtx::explicit_timeouts(&self.0, state_timeout, exec_timeout),
+                }
             }
         }
     };
@@ -132,10 +129,44 @@ fn generate_handle(
     generated_handle
 }
 
+fn generate_call_ctx_struct(
+    generics: &GenericsTokenStreams,
+    base_path_stream: &proc_macro2::TokenStream,
+    call_ctx_type_name: &proc_macro2::Ident,
+) -> proc_macro2::TokenStream {
+    let GenericsTokenStreams {
+        generic_params,
+        impl_generics: _,
+        ty_generics,
+        maybe_where_clause,
+    } = generics;
+
+    // impl_generics and ty_generics from GenericsTokenStreams only cover the router's own params
+    // prefix with `'a` for the lifetime of the router handle we will be borrowing from
+    let struct_generics = if generic_params.is_empty() {
+        quote! { <'a> }
+    } else {
+        quote! { <'a, #( #generic_params ),*> }
+    };
+
+    quote! {
+        pub struct #call_ctx_type_name #struct_generics #maybe_where_clause {
+            inner: ::trolley::call_ctx::CallCtx<'a, #base_path_stream #ty_generics>,
+        }
+
+        impl #struct_generics ::core::fmt::Debug for #call_ctx_type_name #struct_generics #maybe_where_clause {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                f.debug_struct(stringify!(#call_ctx_type_name))
+                 .field("inner", &self.inner)
+                 .finish()
+            }
+        }
+    }
+}
+
 fn generate_call_ctx_method(
     generics: &GenericsTokenStreams,
-    call_ctx: &proc_macro2::TokenStream,
-    _retry_call_ctx: &proc_macro2::TokenStream,
+    call_ctx_type_name: &proc_macro2::Ident,
     self_ty: &proc_macro2::TokenStream,
     method_info: trolley_infra::ServiceMethodInfo,
 ) -> proc_macro2::TokenStream {
@@ -183,45 +214,33 @@ fn generate_call_ctx_method(
         quote! { #struct_name::<#( #generic_params ),*> { #( #arg_names ),* } }
     };
 
-    // actual site at which methods are implemented by name for various call contexts
+    // Lifetime-inclusive impl generics for the specific CallCtx struct.
+    let call_ctx_impl_generics = if generic_params.is_empty() {
+        quote! { <'a> }
+    } else {
+        quote! { <'a, #( #generic_params ),*> }
+    };
+
+    // actual site at which methods are implemented by name for the specific call ctx type
     // FUTURE: retry call ctx actually implement names, but only for arg types that implement clone?
     quote! {
-        impl<'a #(, #generic_params)*> #call_ctx<'a, #self_ty> #maybe_where_clause {
+        impl #call_ctx_impl_generics #call_ctx_type_name #call_ctx_impl_generics #maybe_where_clause {
             pub async fn #name(&self, #( #arg_names: #arg_types ),* ) ->
                 ::std::result::Result<#ret_ty, ::trolley::routed::Error>
             where #self_ty: #router_trait<#full_struct_target, Output = #ret_ty>
             {
                 let input = #full_struct_expr;
-                self.#router_call_method(input).await
+                self.inner.#router_call_method(input).await
             }
         }
-
-        // impl<'a> #retry_call_ctx<'a, #self_ty> where #full_struct_target: Clone {
-        //     pub async fn #name(&self, #( #arg_names: #arg_types ),* ) ->
-        //         ::std::result::Result<#ret_ty, ::trolley::routed::Error>
-        //     where #self_ty: #router_trait<#full_struct_target, Output = #ret_ty>
-        //     {
-        //         let input = #full_struct_expr;
-        //         self.#router_call_method(input).await
-        //     }
-        // }
     }
 }
 
-pub fn generator(
-    paths: &[&path::Path],
-    relative_out_path: &path::Path,
-    call_ctx_module_crate_path: &[&str],
-) {
-    let ctx_path_idents: Vec<proc_macro2::Ident> = call_ctx_module_crate_path
-        .iter()
-        .map(|segment| format_ident!("{}", segment))
-        .collect();
-    let (call_ctx, retry_call_ctx) = generate_call_ctx(&ctx_path_idents);
-
+pub fn generator(paths: &[&path::Path], relative_out_path: &path::Path) {
     let interfaces = interface_generator::extract_interfaces(paths);
 
     let mut generated_stream = Vec::new();
+
     let mut generated_methods = Vec::new();
 
     // mapping from service type name to generics for the router type itself
@@ -233,14 +252,12 @@ pub fn generator(
         methods,
     } in interfaces
     {
+        let (_, last_ident) = split_base_and_ident_from_ty_string(&self_ty.to_string());
+        let call_ctx_type_name = format_ident!("{}CallCtx", last_ident);
+
         for method_info in methods {
-            let call_ctx_method = generate_call_ctx_method(
-                &generics,
-                &call_ctx,
-                &retry_call_ctx,
-                &self_ty,
-                method_info,
-            );
+            let call_ctx_method =
+                generate_call_ctx_method(&generics, &call_ctx_type_name, &self_ty, method_info);
 
             generated_methods.push(call_ctx_method);
         }
@@ -254,10 +271,19 @@ pub fn generator(
         let (base_path_stream, last_ident) = split_base_and_ident_from_ty_string(&ty_string);
 
         let handle_type_name = format_ident!("{}Handle", last_ident);
+        let call_ctx_type_name = format_ident!("{}CallCtx", last_ident);
 
-        let generated_handle =
-            generate_handle(&generics, &base_path_stream, &handle_type_name, &call_ctx);
+        let generated_call_ctx_struct =
+            generate_call_ctx_struct(&generics, &base_path_stream, &call_ctx_type_name);
 
+        let generated_handle = generate_handle(
+            &generics,
+            &base_path_stream,
+            &handle_type_name,
+            &call_ctx_type_name,
+        );
+
+        generated_stream.push(generated_call_ctx_struct);
         generated_stream.push(generated_handle);
     }
 

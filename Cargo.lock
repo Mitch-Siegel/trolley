@@ -227,6 +227,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "trolley_build"
+version = "0.1.0"
+dependencies = [
+ "convert_case",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+ "trolley_infra",
+]
+
+[[package]]
 name = "trolley_example"
 version = "0.1.0"
 dependencies = [
@@ -235,6 +247,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trolley",
+ "trolley_build",
 ]
 
 [[package]]

@@ -9,13 +9,6 @@ use tokio::{
 
 #[allow(clippy::all)]
 #[allow(clippy::absolute_paths)]
-#[allow(clippy::use_self)]
-pub mod services {
-    include!(concat!(env!("OUT_DIR"), "/trolley_call_ctx.rs"));
-}
-
-#[allow(clippy::all)]
-#[allow(clippy::absolute_paths)]
 #[allow(clippy::wildcard_imports)]
 #[allow(clippy::use_self)]
 #[allow(clippy::elidable_lifetime_names)]
@@ -146,7 +139,7 @@ async fn main() {
 
     sleep(Duration::from_secs(1)).await;
     handle
-        .notify_async(CalculatorNotif::BatteryRemoved)
+        .notify(CalculatorNotif::BatteryRemoved)
         .await
         .unwrap();
 

@@ -119,20 +119,7 @@ where
         rsp_rx.await.map_err(routed::Error::RecvError)?
     }
 
-    pub fn notify(
-        &self,
-        notif: <State as RouterBase>::Notif,
-    ) -> Result<(), mpsc::error::SendError<<State as RouterBase>::Notif>> {
-        #[allow(clippy::manual_assert)]
-        if !self.alive.load(atomic::Ordering::Relaxed) {
-            // FUTURE: return error here
-            panic!("router was shut down")
-        }
-        // FIXME: TOCTOU for alive check
-        self.notif_tx.blocking_send(notif)
-    }
-
-    pub async fn notify_async(
+    pub async fn notify(
         &self,
         notif: <State as RouterBase>::Notif,
     ) -> Result<(), mpsc::error::SendError<<State as RouterBase>::Notif>> {
@@ -143,6 +130,19 @@ where
         }
         // FIXME: TOCTOU for alive check
         self.notif_tx.send(notif).await
+    }
+
+    pub fn blocking_notify(
+        &self,
+        notif: <State as RouterBase>::Notif,
+    ) -> Result<(), mpsc::error::SendError<<State as RouterBase>::Notif>> {
+        #[allow(clippy::manual_assert)]
+        if !self.alive.load(atomic::Ordering::Relaxed) {
+            // FUTURE: return error here
+            panic!("router was shut down")
+        }
+        // FIXME: TOCTOU for alive check
+        self.notif_tx.blocking_send(notif)
     }
 
     /// Note that timeout is the *total* duration allowed for both acquiring the state handle *and* executing the call
