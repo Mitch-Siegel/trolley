@@ -4,7 +4,7 @@ use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 use syn::spanned::Spanned;
 
-use crate::{ServiceMethodInfo, collect_service_impls, extract_method_info};
+use crate::{CollectedServiceImpl, ServiceMethodInfo, collect_service_impls, extract_method_info};
 
 pub struct GenericsTokenStreams {
     pub generic_params: Vec<TokenStream>,
@@ -36,21 +36,26 @@ pub struct ServiceInterface {
 /// Extracts service interfaces from the given paths.
 #[must_use]
 pub fn extract_interfaces(paths: &[&path::Path]) -> Vec<ServiceInterface> {
-    let impls: Vec<(String, syn::ItemImpl)> = paths
+    let impls: Vec<CollectedServiceImpl> = paths
         .iter()
         .flat_map(|path| collect_service_impls(path))
         .collect();
 
     let mut interfaces = Vec::new();
 
-    for (src_file, implementation) in impls {
+    for CollectedServiceImpl {
+        file,
+        mod_path,
+        impl_,
+    } in impls
+    {
         let mut methods = Vec::new();
-        for item in &implementation.items {
+        for item in &impl_.items {
             let method = match item {
                 syn::ImplItem::Fn(method) => method,
                 other => panic!(
                     "unexpected item in service impl {:?}:{:?}",
-                    src_file,
+                    file,
                     other.span().start()
                 ),
             };
@@ -66,11 +71,11 @@ pub fn extract_interfaces(paths: &[&path::Path]) -> Vec<ServiceInterface> {
             }));
         }
 
-        let self_ty = &implementation.self_ty;
+        let self_ty = &impl_.self_ty;
 
         interfaces.push(ServiceInterface {
-            self_ty: quote! {#self_ty},
-            generics: implementation.generics.into(),
+            self_ty: quote! { crate:: #(#mod_path::)* #self_ty},
+            generics: impl_.generics.into(),
             methods,
         });
     }

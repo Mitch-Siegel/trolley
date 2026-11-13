@@ -1,22 +1,22 @@
 use std::sync::Arc;
 
 use tokio::{
-    sync::{
-        Mutex, OwnedSemaphorePermit, RwLock, Semaphore, SemaphorePermit, broadcast, mpsc, oneshot,
-    },
+    sync::{RwLock, broadcast, mpsc, oneshot},
     task::{self, JoinSet},
 };
 use tracing::Instrument;
 
-use crate::{Router, RouterBase, RouterPriv, routed};
+use crate::{Router, RouterBase, RouterPriv, events, routed, router::Handle};
 
-#[tracing::instrument(skip(cmd_rx, state_handle, circuit_breaker))]
-pub(crate) async fn cmd_rx_loop<State>(
+mod concurrency;
+
+use concurrency::Concurrency;
+
+#[tracing::instrument(skip(cmd_rx, state_handle, concurrency))]
+async fn cmd_rx_loop<State>(
     mut cmd_rx: mpsc::Receiver<Box<dyn routed::AnyCall<State>>>,
+    concurrency: Arc<Concurrency>,
     state_handle: Arc<RwLock<State>>,
-    circuit_breaker: Arc<Mutex<Arc<Semaphore>>>,
-    mut permits_rx: broadcast::Receiver<()>,
-    permits_tx: broadcast::Sender<()>,
     mut shutdown_cmd_rx: broadcast::Receiver<()>,
 ) where
     State: RouterBase + Send + Sync + 'static,
@@ -27,47 +27,19 @@ pub(crate) async fn cmd_rx_loop<State>(
             // needed if notifs should preempt rx of cmds
             Some(routed) = cmd_rx.recv()=>{
                 tracing::trace!("received routed call {:?}", routed);
+                let permit = concurrency.acquire_owned().await;
                 tracing::trace!("acquired circuit breaker lock");
 
-                loop {
-                    let guard = circuit_breaker.lock().await;
-                    if let Ok(permit) = guard.clone().try_acquire_owned() {
-                        tracing::trace!("acquired permit");
+                #[cfg(not(feature = "route_spans"))]
+                let span = tracing::Span::current();
+                #[cfg(feature = "route_spans")]
+                let span = routed.span().clone();
 
-                        #[cfg(not(feature = "route_spans"))]
-                        let span = tracing::Span::current();
-                        #[cfg(feature = "route_spans")]
-                        let span = routed.span().clone();
-
-                        let run_with_permit =
-                            |permit: OwnedSemaphorePermit,
-                                state_handle: Arc<RwLock<State>>,
-                                routed: Box<dyn routed::AnyCall<State>>,
-                                permits_tx: broadcast::Sender<()>| async move {
-                                routed.run(state_handle).instrument(span).await;
-                                permits_tx
-                                    .send(())
-                                    .expect("unable to send permit availability broadcast");
-                                drop(permit);
-                            };
-
-                        tokio::spawn(run_with_permit(
-                            permit,
-                            state_handle.clone(),
-                            routed,
-                            permits_tx.clone(),
-                        ));
-                        break;
-                    }
-                    tracing::trace!("no permits to acquire - awaiting permit availability");
-                    match permits_rx.recv().await {
-                        Ok(()) |
-                        Err(broadcast::error::RecvError::Lagged(_)) => (),
-                        other => panic!(
-                            "unable to receive permit availability broadcast: {other:?}",
-                        ),
-                    }
-                }
+                let state_handle = state_handle.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    routed.run(state_handle).instrument(span).await;
+                });
             },
             shutdown = shutdown_cmd_rx.recv()=> {
                 shutdown.expect("unable to receive internal shutdown broadcast");
@@ -77,13 +49,11 @@ pub(crate) async fn cmd_rx_loop<State>(
     }
 }
 
-#[tracing::instrument(skip(notif_rx, state_handle, circuit_breaker))]
-pub(crate) async fn notif_rx_loop<State>(
+#[tracing::instrument(skip(notif_rx, shared_state, concurrency))]
+async fn notif_rx_loop<State>(
     mut notif_rx: mpsc::Receiver<<State as RouterBase>::Notif>,
-    n_concurrent: u32,
-    state_handle: Arc<RwLock<State>>,
-    circuit_breaker: Arc<Mutex<Arc<Semaphore>>>,
-    permits_tx: broadcast::Sender<()>,
+    shared_state: Arc<RwLock<State>>,
+    concurrency: Arc<Concurrency>,
     mut shutdown_cmd_rx: broadcast::Receiver<()>,
 ) where
     State: RouterBase + Send + Sync + 'static,
@@ -91,26 +61,13 @@ pub(crate) async fn notif_rx_loop<State>(
     loop {
         tokio::select! {Some(notif) = notif_rx.recv()=> {
             tracing::trace!("received notifiction {:?}", notif);
-            let guard = circuit_breaker.lock().await;
-            tracing::trace!(
-                "holding circuit breaker lock & waiting for all outstanding requests to complete"
-            );
+            // hold circuit breaker over entire notif processing to block dequeue of any incoming commands or internal events
+            let permit = concurrency.acquire_all().await;
 
-            {
-                let _permits = guard
-                    .acquire_many(n_concurrent)
-                    .await
-                    .expect("unable to acquire permits for notif");
-                tracing::trace!("acquired all permits");
-
-                let mut state = state_handle.write().await;
+                let mut state = shared_state.write().await;
                 // FUTURE: add documentation for the handle_notification() method describing that you can get yourself in trouble here
-                task::block_in_place(move || {state.handle_notification(notif)});
+                task::block_in_place(move || {state.handle_notification(notif); drop(permit)});
             }
-            permits_tx
-                .send(())
-                .expect("unable to send permit availability broadcast");
-        },
 
             shutdown= shutdown_cmd_rx.recv() => {
                 shutdown.expect("unable to receive internal shutdown broadcast");
@@ -120,52 +77,25 @@ pub(crate) async fn notif_rx_loop<State>(
     }
 }
 
-#[tracing::instrument(skip(internal_event_rx, state_handle, circuit_breaker))]
-pub(crate) async fn internal_event_rx_loop<State>(
+#[tracing::instrument(skip(internal_event_rx, shared_state, concurrency))]
+async fn internal_event_rx_loop<State>(
     mut internal_event_rx: mpsc::Receiver<<State as RouterPriv>::InternalEvent>,
-    state_handle: Arc<RwLock<State>>,
-    circuit_breaker: Arc<Mutex<Arc<Semaphore>>>,
-    mut permits_rx: broadcast::Receiver<()>,
-    permits_tx: broadcast::Sender<()>,
+    shared_state: Arc<RwLock<State>>,
+    concurrency: Arc<Concurrency>,
     mut shutdown_cmd_rx: broadcast::Receiver<()>,
 ) where
     State: RouterBase + RouterPriv + Send + Sync + 'static,
 {
     loop {
         tokio::select! {Some(internal_event) = internal_event_rx.recv()=> {
-                loop {
-                    let guard = circuit_breaker.lock().await;
-                    match guard.try_acquire() {
-                        Ok(permit) => {
-                            tracing::trace!("acquired permit");
+                    let permit = concurrency.acquire_owned().await;
 
-                            let run_with_permit =
-                                |_permit: SemaphorePermit<'_>,
-                                 state_handle: Arc<RwLock<State>>,
-                                 permits_tx: broadcast::Sender<()>| async move {
-                                    let state = state_handle.read().await;
-                                    state.handle_internal_event(internal_event);
-                                    drop(state);
-                                    permits_tx
-                                        .send(())
-                                        .expect("unable to send permit availability broadcast");
-                                };
-
-                            tokio::spawn(run_with_permit(
-                                permit,
-                                state_handle.clone(),
-                                permits_tx.clone(),
-                            ));
-                            break;
-                        }
-                        Err(_) => {
-                            permits_rx
-                                .recv()
-                                .await
-                                .expect("unable to receive permit availability broadcast");
-                        }
-                    }
-                }
+                    let shared_state = shared_state.clone();
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        let state = shared_state.read().await;
+                        state.handle_internal_event(internal_event);
+                    });
             },
 
                 shutdown= shutdown_cmd_rx.recv() => {
@@ -203,4 +133,77 @@ pub(crate) async fn shutdown_handler<State>(
     shutdown_cmd_done_tx
         .send(result)
         .expect("unable to send shutdown done response");
+}
+
+/// # Panics if `n_permits` exceeds `Semaphore::MAX_PERMITS`
+pub(crate) fn start<State>(
+    state: State,
+    n_permits: u32,
+    notif_tx: mpsc::Sender<<State as RouterBase>::Notif>,
+    notif_rx: mpsc::Receiver<<State as RouterBase>::Notif>,
+    event_rx: mpsc::Receiver<<State as RouterBase>::Event>,
+    internal_event_rx: mpsc::Receiver<<State as RouterPriv>::InternalEvent>,
+) -> (
+    Handle<State>,
+    events::Receiver<<State as RouterBase>::Event>,
+)
+where
+    State: Router,
+{
+    let (cmd_tx, cmd_rx) = mpsc::channel(32);
+
+    let (shutdown_cmd_tx, shutdown_cmd_rx) = oneshot::channel();
+    let (shutdown_cmd_done_tx, shutdown_cmd_done_rx) = oneshot::channel();
+    let (internal_shutdown_tx, internal_shutdown_rx) = broadcast::channel(1);
+    let alive = Arc::new(());
+
+    let concurrency = Arc::new(Concurrency::new(n_permits));
+
+    let mut worker_loops = JoinSet::new();
+
+    let state_arc = Arc::new(RwLock::new(state));
+
+    worker_loops.spawn(cmd_rx_loop(
+        cmd_rx,
+        concurrency.clone(),
+        state_arc.clone(),
+        internal_shutdown_tx.subscribe(),
+    ));
+    worker_loops.spawn(internal_event_rx_loop(
+        internal_event_rx,
+        state_arc.clone(),
+        concurrency.clone(),
+        internal_shutdown_tx.subscribe(),
+    ));
+    worker_loops.spawn(notif_rx_loop(
+        notif_rx,
+        state_arc.clone(),
+        concurrency,
+        internal_shutdown_rx,
+    ));
+
+    let final_weak = Arc::downgrade(&alive);
+
+    let shutdown_join_handle = tokio::spawn(shutdown_handler(
+        state_arc,
+        shutdown_cmd_rx,
+        shutdown_cmd_done_tx,
+        internal_shutdown_tx,
+        alive,
+        worker_loops,
+    ))
+    .instrument(tracing::Span::current());
+    drop(shutdown_join_handle);
+
+    let handle = Handle::<State>::new(
+        cmd_tx,
+        notif_tx,
+        shutdown_cmd_tx,
+        shutdown_cmd_done_rx,
+        final_weak.clone(),
+    );
+
+    let events = events::Receiver::new(event_rx, final_weak);
+
+    (handle, events)
 }

@@ -1,11 +1,7 @@
-use std::{any, fmt, sync::Arc};
+use std::{any, fmt};
 
 use async_trait::async_trait;
-use tokio::{
-    sync::{Mutex, RwLock, Semaphore, broadcast, mpsc, oneshot},
-    task::JoinSet,
-};
-use tracing::Instrument;
+use tokio::sync::mpsc;
 
 use crate::events;
 
@@ -63,89 +59,20 @@ pub trait Router: RouterBase + RouterPriv {
         meta_args: impl Into<Self::Meta> + fmt::Debug + Send,
         n_concurrent: u32,
     ) -> (Handle<Self>, events::Receiver<<Self as RouterBase>::Event>) {
-        let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (notif_tx, notif_rx) = mpsc::channel(32);
-
         let (event_tx, event_rx) = mpsc::channel(32);
         let (internal_event_tx, internal_event_rx) = mpsc::channel(32);
-
-        let (permits_tx, permits_rx) = broadcast::channel(1);
-
-        let (shutdown_cmd_tx, shutdown_cmd_rx) = oneshot::channel();
-        let (shutdown_cmd_done_tx, shutdown_cmd_done_rx) = oneshot::channel();
-        let (internal_shutdown_tx, internal_shutdown_rx) = broadcast::channel(1);
-        let alive = Arc::new(());
-
-        let handle = Handle::<Self>::new(
-            cmd_tx,
-            notif_tx.clone(),
-            shutdown_cmd_tx,
-            shutdown_cmd_done_rx,
-            Arc::downgrade(&alive),
-        );
-
-        let state = Self::new(
-            meta_args.into(),
-            Ctx::new(event_tx, internal_event_tx, notif_tx),
+        runtime::start(
+            Self::new(
+                meta_args.into(),
+                Ctx::new(event_tx, internal_event_tx, notif_tx.clone()),
+            )
+            .await,
+            n_concurrent,
+            notif_tx,
+            notif_rx,
+            event_rx,
+            internal_event_rx,
         )
-        .await;
-
-        // inner arc so that we can take back sole ownership of state object during shutdown
-        let state_handle = Arc::new(RwLock::new(state));
-        let circuit_breaker = Arc::new(Mutex::new(Arc::new(Semaphore::new(n_concurrent as usize))));
-
-        let mut worker_loops = JoinSet::new();
-
-        let _cmd_abort = worker_loops.spawn(
-            runtime::cmd_rx_loop(
-                cmd_rx,
-                state_handle.clone(),
-                circuit_breaker.clone(),
-                permits_rx,
-                permits_tx.clone(),
-                internal_shutdown_rx,
-            )
-            .instrument(tracing::Span::current()),
-        );
-
-        let _notif_abort = worker_loops.spawn(
-            runtime::notif_rx_loop(
-                notif_rx,
-                n_concurrent,
-                state_handle.clone(),
-                circuit_breaker.clone(),
-                permits_tx.clone(),
-                internal_shutdown_tx.subscribe(),
-            )
-            .instrument(tracing::Span::current()),
-        );
-
-        let _internal_event_abort = worker_loops.spawn(
-            runtime::internal_event_rx_loop(
-                internal_event_rx,
-                state_handle.clone(),
-                circuit_breaker,
-                permits_tx.subscribe(),
-                permits_tx,
-                internal_shutdown_tx.subscribe(),
-            )
-            .instrument(tracing::Span::current()),
-        );
-
-        let final_weak = Arc::downgrade(&alive);
-
-        tokio::spawn(
-            runtime::shutdown_handler(
-                state_handle,
-                shutdown_cmd_rx,
-                shutdown_cmd_done_tx,
-                internal_shutdown_tx,
-                alive,
-                worker_loops,
-            )
-            .instrument(tracing::Span::current()),
-        );
-
-        (handle, events::Receiver::new(event_rx, final_weak))
     }
 }

@@ -139,21 +139,85 @@ fn has_service_interface_attribute(attrs: &[syn::Attribute]) -> bool {
     false
 }
 
-#[must_use]
-pub fn collect_service_impls(path: &path::Path) -> Vec<(String, syn::ItemImpl)> {
-    let mut impls = Vec::new();
+pub struct CollectedServiceImpl {
+    pub file: String,
+    pub mod_path: Vec<syn::Ident>,
+    pub impl_: syn::ItemImpl,
+}
 
+fn collect_from_items(
+    items: Vec<syn::Item>,
+    src_file: &str,
+    mod_path: &mut Vec<syn::Ident>,
+    out: &mut Vec<CollectedServiceImpl>,
+) {
+    for item in items {
+        match item {
+            syn::Item::Impl(i) if has_service_interface_attribute(&i.attrs) => {
+                out.push(CollectedServiceImpl {
+                    file: src_file.into(),
+                    mod_path: mod_path.clone(),
+                    impl_: i,
+                });
+            }
+            syn::Item::Mod(m) => {
+                if let Some((_, inner)) = m.content {
+                    mod_path.push(m.ident);
+                    collect_from_items(inner, src_file, mod_path, out);
+                    mod_path.pop().unwrap();
+                }
+            }
+            _ => (),
+        }
+    }
+}
+
+#[must_use]
+pub fn collect_service_impls(root: &path::Path) -> Vec<CollectedServiceImpl> {
+    let mut impls = Vec::new();
+    collect_from_path(root, root, &mut impls);
+    impls
+}
+
+fn file_mod_path(root: &path::Path, file: &path::Path) -> Vec<syn::Ident> {
+    let relative_path = file.strip_prefix(root).unwrap();
+    let mut parts: Vec<String> = relative_path
+        .iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
+    match parts.pop().unwrap().as_str() {
+        "main.rs" | "lib.rs" if parts.is_empty() => {}
+        "mod.rs" => {}
+        file => {
+            parts.push(file.trim_end_matches(".rs").to_owned());
+        }
+    }
+
+    parts
+        .iter()
+        .map(|p| syn::Ident::new(p, Span::call_site()))
+        .collect()
+}
+
+fn collect_from_path(root: &path::Path, path: &path::Path, impls: &mut Vec<CollectedServiceImpl>) {
     if path.is_dir() {
         for entry in fs::read_dir(path).expect("failed to read directory") {
             let entry = entry.expect("failed to ready directory entry");
             let path = entry.path();
-            impls.extend(collect_service_impls(&path));
+            collect_from_path(root, &path, impls);
         }
     } else if path.extension().is_some_and(|e| e == "rs") {
         let source = fs::read_to_string(path)
             .unwrap_or_else(|_| panic!("failed to read file {}", path.display()));
-        let source = match syn::parse_file(&source) {
-            Ok(parsed) => parsed,
+        match syn::parse_file(&source) {
+            Ok(parsed) => {
+                collect_from_items(
+                    parsed.items,
+                    &path.display().to_string(),
+                    &mut file_mod_path(root, path),
+                    impls,
+                );
+            }
             Err(e) => {
                 let span = e.span();
                 let start = span.start();
@@ -164,19 +228,8 @@ pub fn collect_service_impls(path: &path::Path) -> Vec<(String, syn::ItemImpl)> 
                     start
                 );
             }
-        };
-
-        for item in source.items {
-            match item {
-                syn::Item::Impl(i) if has_service_interface_attribute(&i.attrs) => {
-                    impls.push((path.to_str().unwrap().into(), i));
-                }
-                _ => (),
-            }
         }
     }
-
-    impls
 }
 
 #[must_use]

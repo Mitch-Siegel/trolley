@@ -91,7 +91,7 @@ where
     State: Router,
 {
     pub async fn shutdown(self) -> <State as RouterBase>::ShutdownResult {
-        let _guard = self.alive.upgrade().expect("router was already shut down");
+        let guard = self.alive.upgrade().expect("router was already shut down");
 
         let ShutdownChannels {
             shutdown_tx,
@@ -107,7 +107,7 @@ where
             .send(())
             .expect("unable to transmit shutdown message to router");
 
-        drop(_guard);
+        drop(guard);
 
         shutdown_done_rx
             .await
