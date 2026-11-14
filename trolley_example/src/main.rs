@@ -104,7 +104,7 @@ impl RouterBase for Calculator {
 
     fn handle_notification(&mut self, notif: Self::Notif) {
         match notif {
-            Self::Notif::BatteryRemoved => *self.battery.blocking_write() = None,
+            Self::Notif::BatteryRemoved => *self.battery.try_write().unwrap() = None,
         }
     }
 
@@ -147,5 +147,6 @@ async fn main() {
         tracing::info!("{:?}", res);
     }
 
-    handle.shutdown().await;
+    // should return `None` since battery was removed
+    assert!(handle.shutdown().await.is_none());
 }

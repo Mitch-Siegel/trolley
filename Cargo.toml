@@ -5,7 +5,6 @@ members = ["trolley", "trolley_macros", "trolley_infra", "trolley_example"]
 [workspace.dependencies]
 trolley = { path = "./trolley" }
 trolley_infra = { path = "./trolley_infra" }
-trolley_macros = { path = "./trolley_macros" }
 trolley_build = { path = "./trolley_build" }
 
 
@@ -16,6 +15,9 @@ unreachable_pub = "deny"
 pedantic = "warn"
 use_self = "warn"
 nursery = "warn"
+
+# causes false positives in async code
+significant_drop_tightening = { level = "allow", priority = 1 }
 redundant_clone = "warn"
 equatable_if_let = "warn"
 needless_pass_by_ref_mut = "warn"

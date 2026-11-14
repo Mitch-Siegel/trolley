@@ -12,13 +12,8 @@ use crate::{
     router::{Router, RouterBase},
 };
 
-struct ShutdownChannels<State>
-where
-    State: Router,
-{
-    shutdown_tx: oneshot::Sender<()>,
-    shutdown_done_rx: oneshot::Receiver<<State as RouterBase>::ShutdownResult>,
-}
+type ShutdownDoneRx<State> = oneshot::Sender<<State as RouterBase>::ShutdownResult>;
+
 pub struct Handle<State>
 where
     State: Router,
@@ -31,7 +26,7 @@ where
     // FUTURE: time statistics (per call type and total?)
     cmd_tx: mpsc::Sender<Box<dyn routed::AnyCall<State>>>,
     notif_tx: mpsc::Sender<<State as RouterBase>::Notif>,
-    shutdown_channels: Arc<RwLock<Option<ShutdownChannels<State>>>>,
+    shutdown_channels: Arc<RwLock<Option<oneshot::Sender<ShutdownDoneRx<State>>>>>,
     alive: Weak<()>,
     _state: marker::PhantomData<State>,
 }
@@ -43,17 +38,13 @@ where
     pub(crate) fn new(
         cmd_tx: mpsc::Sender<Box<dyn routed::AnyCall<State>>>,
         notif_tx: mpsc::Sender<<State as RouterBase>::Notif>,
-        shutdown_tx: oneshot::Sender<()>,
-        shutdown_done_rx: oneshot::Receiver<<State as RouterBase>::ShutdownResult>,
+        shutdown_tx: oneshot::Sender<ShutdownDoneRx<State>>,
         alive: Weak<()>,
     ) -> Self {
         Self {
             cmd_tx,
             notif_tx,
-            shutdown_channels: Arc::new(RwLock::new(Some(ShutdownChannels {
-                shutdown_tx,
-                shutdown_done_rx,
-            }))),
+            shutdown_channels: Arc::new(RwLock::new(Some(shutdown_tx))),
             alive,
             _state: marker::PhantomData,
         }
@@ -93,18 +84,17 @@ where
     pub async fn shutdown(self) -> <State as RouterBase>::ShutdownResult {
         let guard = self.alive.upgrade().expect("router was already shut down");
 
-        let ShutdownChannels {
-            shutdown_tx,
-            shutdown_done_rx,
-        } = self
+        let shutdown_tx: oneshot::Sender<ShutdownDoneRx<State>> = self
             .shutdown_channels
             .write()
             .await
             .take()
             .expect("shutdown already in progress through another handle");
 
+        let (shutdown_done_tx, shutdown_done_rx) = oneshot::channel();
+
         shutdown_tx
-            .send(())
+            .send(shutdown_done_tx)
             .expect("unable to transmit shutdown message to router");
 
         drop(guard);

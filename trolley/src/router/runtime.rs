@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::{
     sync::{RwLock, broadcast, mpsc, oneshot},
-    task::{self, JoinSet},
+    task::JoinSet,
 };
 use tracing::Instrument;
 
@@ -11,6 +11,9 @@ use crate::{Router, RouterBase, RouterPriv, events, routed, router::Handle};
 mod concurrency;
 
 use concurrency::Concurrency;
+
+#[cfg(test)]
+mod tests;
 
 #[tracing::instrument(skip(cmd_rx, state_handle, concurrency))]
 async fn cmd_rx_loop<State>(
@@ -62,17 +65,15 @@ async fn notif_rx_loop<State>(
         tokio::select! {Some(notif) = notif_rx.recv()=> {
             tracing::trace!("received notifiction {:?}", notif);
             // hold circuit breaker over entire notif processing to block dequeue of any incoming commands or internal events
-            let permit = concurrency.acquire_all().await;
+            let _permit = concurrency.acquire_all().await;
 
-                let mut state = shared_state.write().await;
-                // FUTURE: add documentation for the handle_notification() method describing that you can get yourself in trouble here
-                task::block_in_place(move || {state.handle_notification(notif); drop(permit)});
-            }
-
-            shutdown= shutdown_cmd_rx.recv() => {
-                shutdown.expect("unable to receive internal shutdown broadcast");
-                return;
-            }
+            let mut state = shared_state.write().await;
+            state.handle_notification(notif);
+        }
+        shutdown = shutdown_cmd_rx.recv() => {
+            shutdown.expect("unable to receive internal shutdown broadcast");
+            return;
+        }
         }
     }
 }
@@ -109,15 +110,14 @@ async fn internal_event_rx_loop<State>(
 
 pub(crate) async fn shutdown_handler<State>(
     state_handle: Arc<RwLock<State>>,
-    shutdown_cmd_rx: oneshot::Receiver<()>,
-    shutdown_cmd_done_tx: oneshot::Sender<<State as RouterBase>::ShutdownResult>,
+    shutdown_cmd_rx: oneshot::Receiver<oneshot::Sender<<State as RouterBase>::ShutdownResult>>,
     internal_shutdown_tx: broadcast::Sender<()>,
     alive: Arc<()>,
     worker_loops: JoinSet<()>,
 ) where
     State: Router,
 {
-    shutdown_cmd_rx
+    let shutdown_done_tx = shutdown_cmd_rx
         .await
         .expect("unable to receive shutdown message");
     drop(alive);
@@ -127,10 +127,11 @@ pub(crate) async fn shutdown_handler<State>(
     worker_loops.join_all().await;
     tracing::debug!("all worker loops joined");
     let state: State = Arc::try_unwrap(state_handle)
-        .unwrap_or_else(|_| panic!("unable to take singular ownership over state during shutdown"))
+        .ok() // for code coverage :)
+        .expect("unable to take singular ownership over state during shutdown")
         .into_inner();
     let result = state.shutdown().await;
-    shutdown_cmd_done_tx
+    shutdown_done_tx
         .send(result)
         .expect("unable to send shutdown done response");
 }
@@ -153,7 +154,6 @@ where
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
 
     let (shutdown_cmd_tx, shutdown_cmd_rx) = oneshot::channel();
-    let (shutdown_cmd_done_tx, shutdown_cmd_done_rx) = oneshot::channel();
     let (internal_shutdown_tx, internal_shutdown_rx) = broadcast::channel(1);
     let alive = Arc::new(());
 
@@ -187,7 +187,6 @@ where
     let shutdown_join_handle = tokio::spawn(shutdown_handler(
         state_arc,
         shutdown_cmd_rx,
-        shutdown_cmd_done_tx,
         internal_shutdown_tx,
         alive,
         worker_loops,
@@ -195,13 +194,7 @@ where
     .instrument(tracing::Span::current());
     drop(shutdown_join_handle);
 
-    let handle = Handle::<State>::new(
-        cmd_tx,
-        notif_tx,
-        shutdown_cmd_tx,
-        shutdown_cmd_done_rx,
-        final_weak.clone(),
-    );
+    let handle = Handle::<State>::new(cmd_tx, notif_tx, shutdown_cmd_tx, final_weak.clone());
 
     let events = events::Receiver::new(event_rx, final_weak);
 

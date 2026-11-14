@@ -2,7 +2,7 @@ use std::{error, fmt};
 
 use tokio::{sync::oneshot, time::Duration};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     RwLockTimeout(Duration),
     ExecuteTimeout(Duration, Duration),

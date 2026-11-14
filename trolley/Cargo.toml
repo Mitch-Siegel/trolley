@@ -6,12 +6,10 @@ edition = "2024"
 # TODO: minimize for trolley itself
 [dependencies]
 trolley_macros = { path = "../trolley_macros" }
-trolley_infra = { path = "../trolley_infra" }
 async-trait = "0.1.89"
 tokio = { version = "1.49.0", features = ["sync", "time", "macros", "rt-multi-thread"] }
 tracing = "0.1.44"
 quote = "1.0.44"
-
 proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
 
 [features]

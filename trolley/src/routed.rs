@@ -71,11 +71,8 @@ struct RoutedInner<Input, Output> {
 }
 
 impl<Input, Output> RoutedInner<Input, Output> {
-    const fn new(
-        input: Input,
-        rsp_tx: oneshot::Sender<Result<Output, Error>>,
-        timeout: Timeout,
-    ) -> Self {
+    #[allow(clippy::missing_const_for_fn)]
+    fn new(input: Input, rsp_tx: oneshot::Sender<Result<Output, Error>>, timeout: Timeout) -> Self {
         Self {
             input,
             rsp_tx,
