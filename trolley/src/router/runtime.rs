@@ -36,7 +36,7 @@ async fn cmd_rx_loop<State>(
                 #[cfg(not(feature = "route_spans"))]
                 let span = tracing::Span::current();
                 #[cfg(feature = "route_spans")]
-                let span = routed.span().clone();
+                let span = routed.span();
 
                 let state_handle = state_handle.clone();
                 tokio::spawn(async move {

@@ -8,11 +8,3 @@ pub use router::{Router, RouterBase, RouterMeta, RouterPriv};
 pub use trolley_macros::{Router, interface, router_meta};
 
 pub use traits::{Service, ServiceMut};
-
-#[macro_export]
-macro_rules! include_generated {
-    ($filename:literal) => {
-        #[cfg(not(feature = "build"))]
-        include!(concat!(env!("OUT_DIR"), $filename))
-    };
-}

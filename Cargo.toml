@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["trolley", "trolley_macros", "trolley_infra", "trolley_example"]
+members = ["trolley", "trolley_macros", "trolley_infra", "trolley_example", "trolley_build"]
 
 [workspace.dependencies]
 trolley = { path = "./trolley" }

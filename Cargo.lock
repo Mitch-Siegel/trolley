@@ -218,11 +218,8 @@ name = "trolley"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "proc-macro2",
- "quote",
  "tokio",
  "tracing",
- "trolley_infra",
  "trolley_macros",
 ]
 
@@ -230,11 +227,8 @@ dependencies = [
 name = "trolley_build"
 version = "0.1.0"
 dependencies = [
- "convert_case",
- "prettyplease",
  "proc-macro2",
  "quote",
- "syn 3.0.9",
  "trolley_infra",
 ]
 
